@@ -31,24 +31,18 @@ st.markdown(
     html, body, .stApp, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    /* Cegah scroll horizontal — panel Asisten AI yang digeser ke luar layar
-       (translateX) tetap dihitung lebarnya oleh browser kalau ini tidak dikunci.
-       Ditarget ke beberapa kemungkinan container scroll Streamlit sekaligus. */
-    html {
-        overflow-x: hidden !important;
-        max-width: 100vw !important;
-    }
-    body {
+    /* Cegah scroll horizontal HALAMAN — hanya dikunci di html/body, JANGAN di
+       container dalam (.main, stMainBlockContainer, dst), karena mengunci
+       overflow di container dalam ikut mengganggu widget yang MEMANG perlu
+       scroll horizontal sendiri (tabel Rincian Kepemilikan, dsb). */
+    html, body {
         overflow-x: hidden !important;
     }
-    .stApp,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"],
-    [data-testid="stMainBlockContainer"],
-    .main,
-    section.main {
-        overflow-x: hidden !important;
-        max-width: 100vw !important;
+    /* Header/toolbar bawaan Streamlit — transparankan supaya tidak jadi
+       strip putih di HP sebelum/saat tema custom termuat. */
+    [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {
+        background: transparent !important;
+        background-color: transparent !important;
     }
     #MainMenu, footer, [data-testid="stDecoration"] { visibility: hidden; height: 0; }
     h1 { font-weight: 700; letter-spacing: -0.02em; }
@@ -65,6 +59,13 @@ st.markdown(
     }
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
     [data-testid="stMetricValue"] { font-weight: 700; }
+
+    /* Tabel/dataframe — pastikan selalu bisa discroll ke samping dengan
+       swipe halus di HP, bukan dipaksa reflow ke bawah. */
+    [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -318,6 +319,7 @@ st.markdown(
     @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
             padding-right: 1rem !important;
+            transition: none !important;
         }}
     }}
     </style>
@@ -476,6 +478,7 @@ with col_main:
 
         with col_tabel:
             st.subheader("Rincian Kepemilikan")
+            st.caption("Geser tabel ke samping ⟶ untuk melihat semua kolom di layar sempit.")
 
             def fmt_angka(v):
                 return f"{v:,.0f}" if isinstance(v, (int, float)) else v
@@ -543,6 +546,11 @@ with col_main:
 #    tapi di kanan), polos tanpa efek dekoratif, sama seperti di halaman
 #    Pembanding Saham.
 # ============================================================
+def _tutup_panel_ai_pf():
+    st.session_state.tampilkan_panel_ai = False
+    st.session_state.toggle_panel_ai_pf = False
+
+
 with st.container(key="panel_asisten_ai"):
 
         # Container ini SELALU di-render (tidak dibungkus if) supaya node-nya
@@ -562,6 +570,7 @@ with st.container(key="panel_asisten_ai"):
                 width: {LEBAR_PANEL_AI}px;
                 height: 100vh;
                 overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
                 background: #12161f;
                 border-left: 1px solid rgba(255,255,255,0.08);
                 padding: 16px;
@@ -570,7 +579,8 @@ with st.container(key="panel_asisten_ai"):
                 transform: {_transform_panel};
                 opacity: {_opacity_panel};
                 pointer-events: {_pointer_panel};
-                transition: transform 0.18s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.15s ease;
+                will-change: transform;
+                transition: transform 0.2s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.18s ease;
             }}
             .gemini-judul {{
                 font-size: 16px;
@@ -582,7 +592,7 @@ with st.container(key="panel_asisten_ai"):
                 font-size: 12px;
                 color: #8891aa;
                 line-height: 1.4;
-                margin: 0 0 12px 0;
+                margin: 0 28px 12px 0;
             }}
             .gemini-greeting {{
                 padding: 16px 2px 4px 2px;
@@ -632,6 +642,25 @@ with st.container(key="panel_asisten_ai"):
                 color: #eef0fb !important;
             }}
 
+            /* Tombol tutup (X) — dipin pojok kanan atas panel */
+            .st-key-tombol_tutup_ai_pf {{
+                position: absolute;
+                top: 14px;
+                right: 14px;
+                z-index: 2;
+            }}
+            .st-key-tombol_tutup_ai_pf .stButton > button {{
+                width: 30px;
+                height: 30px;
+                padding: 0 !important;
+                border-radius: 50% !important;
+                font-size: 15px;
+                line-height: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+
             /* Di HP (layar sempit), panel jadi overlay penuh layar biar
                tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
             @media (max-width: 768px) {{
@@ -648,6 +677,10 @@ with st.container(key="panel_asisten_ai"):
             """,
             unsafe_allow_html=True,
         )
+
+        # Tombol tutup (X) — cara paling gampang buat nutup panel di HP.
+        with st.container(key="tombol_tutup_ai_pf"):
+            st.button("✕", key="btn_tutup_panel_ai_pf", on_click=_tutup_panel_ai_pf)
 
         st.markdown(
             """

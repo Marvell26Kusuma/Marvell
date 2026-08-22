@@ -65,30 +65,24 @@ st.markdown(
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }}
 
-    /* Cegah scroll horizontal — panel Asisten AI yang digeser ke luar layar
-       (translateX) tetap dihitung lebarnya oleh browser kalau ini tidak dikunci.
-       Ditarget ke beberapa kemungkinan container scroll Streamlit sekaligus,
-       karena versi Streamlit berbeda-beda punya elemen scroll utama yang beda. */
-    html {{
+    /* Cegah scroll horizontal HALAMAN — hanya dikunci di html/body, JANGAN di
+       container dalam (.main, stMainBlockContainer, dst), karena mengunci
+       overflow di container dalam ikut mengganggu widget yang MEMANG perlu
+       scroll horizontal sendiri (tabel rasio, kartu saham). */
+    html, body {{
         overflow-x: hidden !important;
-        max-width: 100vw !important;
-    }}
-    body {{
-        overflow-x: hidden !important;
-    }}
-    .stApp,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"],
-    [data-testid="stMainBlockContainer"],
-    .main,
-    section.main {{
-        overflow-x: hidden !important;
-        max-width: 100vw !important;
     }}
 
     .stApp {{
         background-color: {app_bg};
         color: {teks_warna};
+    }}
+    /* Header/toolbar bawaan Streamlit (terutama kelihatan di HP) defaultnya
+       putih terang — kalau tidak ditransparankan, sekilas jadi strip putih
+       di atas layar sebelum/saat CSS tema dimuat. */
+    [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"] {{
+        background: transparent !important;
+        background-color: transparent !important;
     }}
     [data-testid="stSidebar"] {{
         background-color: {sidebar_bg};
@@ -145,6 +139,14 @@ st.markdown(
     /* Metric — angka lebih tegas */
     [data-testid="stMetricValue"] {{
         font-weight: 700;
+    }}
+
+    /* Tabel/dataframe (rasio keuangan dsb) — pastikan SELALU bisa discroll
+       ke samping dengan swipe halus di HP, bukan malah dipaksa reflow ke
+       bawah atau kepotong. */
+    [data-testid="stDataFrame"], [data-testid="stDataFrameResizable"] {{
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
     }}
     </style>
     """,
@@ -393,7 +395,9 @@ st.markdown(
     <style>
     /* Sisakan ruang di kanan supaya konten utama tidak ketutup panel AI yang fixed.
        Selalu di-render (bukan kondisional) supaya transition-nya jalan mulus
-       saat panel dibuka/ditutup, bukan lompat instan. */
+       saat panel dibuka/ditutup, bukan lompat instan. Hanya berlaku di layar
+       lebar — di HP di-nolkan lewat media query di bawah karena panel jadi
+       overlay penuh layar di sana. */
     [data-testid="stMainBlockContainer"], .main .block-container {{
         padding-right: {PADDING_KANAN_AKTIF}px !important;
         transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
@@ -405,6 +409,7 @@ st.markdown(
     @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
             padding-right: 1rem !important;
+            transition: none !important;
         }}
     }}
     </style>
@@ -835,7 +840,9 @@ with col_main:
         <style>
         .scroll-container {
             display: flex;
+            flex-wrap: nowrap;
             overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
             gap: 14px;
             padding: 4px 4px 16px 4px;
         }
@@ -1058,6 +1065,7 @@ with col_main:
     # 10. Tabel & Grafik Perbandingan per Kategori Rasio
     # ============================================================
     st.subheader("Perbandingan Rasio Keuangan Lengkap")
+    st.caption("Geser tabel ke samping ⟶ untuk melihat semua kolom rasio di layar sempit.")
 
     KATEGORI_RASIO = {
         "Valuasi": ["PER (Trailing)", "PER (Forward)", "PBV", "PEG Ratio",
@@ -1300,6 +1308,11 @@ def _proses_prompt_ai(kotak_chat, prompt_teks: str):
     simpan_memori_ai(st.session_state.riwayat_chat_saham, st.session_state.get("catatan_preferensi_ai", ""))
 
 
+def _tutup_panel_ai():
+    st.session_state.tampilkan_panel_ai = False
+    st.session_state.toggle_panel_ai = False
+
+
 with st.container(key="panel_asisten_ai"):
 
         # -- Panel dibuat fixed di sisi kanan layar (position:fixed), menyatu
@@ -1322,6 +1335,7 @@ with st.container(key="panel_asisten_ai"):
                 width: {LEBAR_PANEL_AI}px;
                 height: 100vh;
                 overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
                 background: #12161f;
                 border-left: 1px solid rgba(255,255,255,0.08);
                 padding: 16px;
@@ -1330,7 +1344,8 @@ with st.container(key="panel_asisten_ai"):
                 transform: {_transform_panel};
                 opacity: {_opacity_panel};
                 pointer-events: {_pointer_panel};
-                transition: transform 0.18s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.15s ease;
+                will-change: transform;
+                transition: transform 0.2s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.18s ease;
             }}
             .gemini-judul {{
                 font-size: 16px;
@@ -1342,7 +1357,7 @@ with st.container(key="panel_asisten_ai"):
                 font-size: 12px;
                 color: #8891aa;
                 line-height: 1.4;
-                margin: 0 0 12px 0;
+                margin: 0 28px 12px 0;
             }}
             .gemini-greeting {{
                 padding: 16px 2px 4px 2px;
@@ -1392,6 +1407,25 @@ with st.container(key="panel_asisten_ai"):
                 color: #eef0fb !important;
             }}
 
+            /* Tombol tutup (X) — dipin pojok kanan atas panel */
+            .st-key-tombol_tutup_ai {{
+                position: absolute;
+                top: 14px;
+                right: 14px;
+                z-index: 2;
+            }}
+            .st-key-tombol_tutup_ai .stButton > button {{
+                width: 30px;
+                height: 30px;
+                padding: 0 !important;
+                border-radius: 50% !important;
+                font-size: 15px;
+                line-height: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+
             /* Di HP (layar sempit), panel jadi overlay penuh layar biar
                tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
             @media (max-width: 768px) {{
@@ -1408,6 +1442,11 @@ with st.container(key="panel_asisten_ai"):
             """,
             unsafe_allow_html=True,
         )
+
+        # Tombol tutup (X) — cara paling gampang buat nutup panel di HP,
+        # nggak perlu buka sidebar dulu atau ngandelin klik area backdrop.
+        with st.container(key="tombol_tutup_ai"):
+            st.button("✕", key="btn_tutup_panel_ai", on_click=_tutup_panel_ai)
 
         st.markdown(
             """
