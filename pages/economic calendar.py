@@ -31,10 +31,35 @@ st.markdown(
     html, body, .stApp, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
+    html {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+        background-color: #0e1117 !important;
+    }
+    body {
+        overflow-x: hidden !important;
+        background-color: #0e1117 !important;
+        overscroll-behavior-y: none;
+    }
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stMainBlockContainer"],
+    .main,
+    section.main {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+        background-color: #0e1117 !important;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #131722 !important;
+    }
     #MainMenu, footer, [data-testid="stDecoration"] { visibility: hidden; height: 0; }
     h1 { font-weight: 700; letter-spacing: -0.02em; }
     h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
     .stButton > button, .stDownloadButton > button {
+        background-color: rgba(255,255,255,0.04);
+        color: #e6e6e6;
         border-radius: 8px;
         border: 1px solid rgba(128,128,128,0.25);
         font-weight: 500;
@@ -43,6 +68,61 @@ st.markdown(
     .stButton > button:hover, .stDownloadButton > button:hover {
         border-color: #2962ff;
         color: #2962ff;
+    }
+    .stButton > button:disabled {
+        background-color: rgba(255,255,255,0.02);
+        color: rgba(255,255,255,0.35) !important;
+    }
+    [data-testid="stExpander"] {
+        background-color: rgba(255,255,255,0.02);
+        border: 1px solid rgba(128,128,128,0.15);
+        border-radius: 10px;
+    }
+    [data-testid="stExpander"] summary {
+        background-color: transparent !important;
+    }
+    .stTextInput input,
+    .stNumberInput input,
+    .stDateInput input,
+    .stSelectbox > div > div,
+    .stMultiSelect > div > div,
+    [data-baseweb="select"] > div,
+    [data-baseweb="input"] {
+        background-color: rgba(255,255,255,0.04) !important;
+        color: #e6e6e6 !important;
+        border-radius: 8px !important;
+        border-color: rgba(128,128,128,0.25) !important;
+    }
+    [data-baseweb="tag"] {
+        background-color: rgba(41,98,255,0.25) !important;
+    }
+    [data-baseweb="popover"],
+    [data-baseweb="menu"],
+    ul[role="listbox"],
+    li[role="option"] {
+        background-color: #131722 !important;
+        color: #e6e6e6 !important;
+    }
+    li[role="option"]:hover {
+        background-color: rgba(255,255,255,0.08) !important;
+    }
+    @media (max-width: 768px) {
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            overflow-x: auto !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 200px;
+        }
+    }
+    [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {
+        -webkit-overflow-scrolling: touch;
+        scroll-behavior: smooth;
+    }
     }
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
 
