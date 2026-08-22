@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import requests
 
@@ -23,27 +22,6 @@ st.caption(
 )
 
 # ============================================================
-# 1b. Bersihkan sisa overlay panel Asisten AI dari halaman lain.
-#     Streamlit multi-page itu satu dokumen browser yang isinya
-#     gonta-ganti (bukan reload penuh), jadi elemen yang ditempel ke
-#     window.parent.document di halaman lain bisa "nyangkut" kalau
-#     tidak sempat dibersihkan sebelum pindah halaman. Ini jaring
-#     pengaman: singkirkan elemen itu kalau kebetulan masih ada.
-# ============================================================
-components.html(
-    """
-    <script>
-    (function() {
-        const parentDoc = window.parent.document;
-        const backdrop = parentDoc.getElementById('ai-panel-backdrop');
-        if (backdrop) { backdrop.remove(); }
-    })();
-    </script>
-    """,
-    height=0,
-)
-
-# ============================================================
 # 2. Styling — konsisten dengan halaman lain
 # ============================================================
 st.markdown(
@@ -53,23 +31,35 @@ st.markdown(
     html, body, .stApp, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-
-    /* Cegah scroll horizontal HALAMAN — cukup dikunci di html/body saja.
-       JANGAN dikunci juga di container dalam (.main, stMainBlockContainer,
-       dst), karena itu justru mengganggu widget yang MEMANG perlu scroll
-       horizontal sendiri (tabel dataframe, kartu-kartu). */
-    html, body {
+    html {
         overflow-x: hidden !important;
-        background-color: #0e1117;
+        max-width: 100vw !important;
+        background-color: #0e1117 !important;
     }
-
-    [data-testid="stHeader"], [data-testid="stToolbar"] {
-        background: transparent !important;
+    body {
+        overflow-x: hidden !important;
+        background-color: #0e1117 !important;
+        overscroll-behavior-y: none;
+    }
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stMainBlockContainer"],
+    .main,
+    section.main {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+        background-color: #0e1117 !important;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #131722 !important;
     }
     #MainMenu, footer, [data-testid="stDecoration"] { visibility: hidden; height: 0; }
     h1 { font-weight: 700; letter-spacing: -0.02em; }
     h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
     .stButton > button, .stDownloadButton > button {
+        background-color: rgba(255,255,255,0.04);
+        color: #e6e6e6;
         border-radius: 8px;
         border: 1px solid rgba(128,128,128,0.25);
         font-weight: 500;
@@ -78,6 +68,61 @@ st.markdown(
     .stButton > button:hover, .stDownloadButton > button:hover {
         border-color: #2962ff;
         color: #2962ff;
+    }
+    .stButton > button:disabled {
+        background-color: rgba(255,255,255,0.02);
+        color: rgba(255,255,255,0.35) !important;
+    }
+    [data-testid="stExpander"] {
+        background-color: rgba(255,255,255,0.02);
+        border: 1px solid rgba(128,128,128,0.15);
+        border-radius: 10px;
+    }
+    [data-testid="stExpander"] summary {
+        background-color: transparent !important;
+    }
+    .stTextInput input,
+    .stNumberInput input,
+    .stDateInput input,
+    .stSelectbox > div > div,
+    .stMultiSelect > div > div,
+    [data-baseweb="select"] > div,
+    [data-baseweb="input"] {
+        background-color: rgba(255,255,255,0.04) !important;
+        color: #e6e6e6 !important;
+        border-radius: 8px !important;
+        border-color: rgba(128,128,128,0.25) !important;
+    }
+    [data-baseweb="tag"] {
+        background-color: rgba(41,98,255,0.25) !important;
+    }
+    [data-baseweb="popover"],
+    [data-baseweb="menu"],
+    ul[role="listbox"],
+    li[role="option"] {
+        background-color: #131722 !important;
+        color: #e6e6e6 !important;
+    }
+    li[role="option"]:hover {
+        background-color: rgba(255,255,255,0.08) !important;
+    }
+    @media (max-width: 768px) {
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            overflow-x: auto !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 200px;
+        }
+    }
+    [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {
+        -webkit-overflow-scrolling: touch;
+        scroll-behavior: smooth;
+    }
     }
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
 
@@ -108,16 +153,11 @@ st.markdown(
         padding: 8px 4px;
         border-bottom: 1px solid rgba(151, 166, 195, 0.14);
         font-size: 13.5px;
-        flex-wrap: wrap;
     }
     .event-row .waktu { width: 64px; color: #8a8f99; flex-shrink: 0; }
     .event-row .mata-uang { width: 46px; flex-shrink: 0; font-weight: 600; }
-    .event-row .judul-event { flex: 1; min-width: 140px; }
+    .event-row .judul-event { flex: 1; }
     .event-row .angka { width: 70px; text-align: right; color: #a8adb8; flex-shrink: 0; font-size: 12.5px; }
-
-    /* Di layar sempit, kartu sorotan (3 kolom) otomatis disusun Streamlit
-       jadi bertumpuk ke bawah — itu perilaku bawaan yang memang paling
-       aman di HP, jadi sengaja TIDAK dipaksa jadi scroll ke samping. */
     </style>
     """,
     unsafe_allow_html=True,
