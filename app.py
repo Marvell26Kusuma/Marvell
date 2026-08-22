@@ -284,7 +284,7 @@ with st.sidebar.expander("Asisten AI", expanded=False):
         st.caption("Dapatkan API key gratis di aistudio.google.com/apikey")
 
 if "tampilkan_panel_ai" not in st.session_state:
-    st.session_state.tampilkan_panel_ai = True
+    st.session_state.tampilkan_panel_ai = False
 with st.sidebar.container(border=True):
     st.session_state.tampilkan_panel_ai = st.checkbox(
         "Tampilkan Asisten AI",
@@ -383,7 +383,7 @@ daftar_saham = st.session_state.daftar_saham
 # ============================================================
 # 6b. Layout dua kolom: halaman utama (kiri) + panel Asisten AI (kanan, persisten)
 # ============================================================
-tampilkan_panel_ai = st.session_state.get("tampilkan_panel_ai", True)
+tampilkan_panel_ai = st.session_state.get("tampilkan_panel_ai", False)
 
 LEBAR_PANEL_AI = 380  # px
 PADDING_KANAN_AKTIF = LEBAR_PANEL_AI + 24 if tampilkan_panel_ai else 0
@@ -397,6 +397,15 @@ st.markdown(
     [data-testid="stMainBlockContainer"], .main .block-container {{
         padding-right: {PADDING_KANAN_AKTIF}px !important;
         transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
+    }}
+
+    /* Di layar sempit (HP), panel AI jadi overlay penuh (bukan sisip di
+       samping), jadi konten utama TIDAK perlu diberi ruang kosong di
+       kanan — kalau tetap dipaksa, layar HP jadi kepencet sempit sekali. */
+    @media (max-width: 768px) {{
+        [data-testid="stMainBlockContainer"], .main .block-container {{
+            padding-right: 1rem !important;
+        }}
     }}
     </style>
     """,
@@ -1343,6 +1352,19 @@ with st.container(key="panel_asisten_ai"):
             }}
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
+            }}
+
+            /* Di HP (layar sempit), panel jadi overlay penuh layar biar
+               tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
+            @media (max-width: 768px) {{
+                .st-key-panel_asisten_ai {{
+                    width: 100vw !important;
+                    border-left: none;
+                }}
+                .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
+                    width: calc(100vw - 32px) !important;
+                    right: 16px !important;
+                }}
             }}
             </style>
             """,

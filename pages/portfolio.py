@@ -30,6 +30,25 @@ st.markdown(
     html, body, .stApp, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
+    /* Cegah scroll horizontal — panel Asisten AI yang digeser ke luar layar
+       (translateX) tetap dihitung lebarnya oleh browser kalau ini tidak dikunci.
+       Ditarget ke beberapa kemungkinan container scroll Streamlit sekaligus. */
+    html {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+    }
+    body {
+        overflow-x: hidden !important;
+    }
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stMainBlockContainer"],
+    .main,
+    section.main {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+    }
     #MainMenu, footer, [data-testid="stDecoration"] { visibility: hidden; height: 0; }
     h1 { font-weight: 700; letter-spacing: -0.02em; }
     h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
@@ -76,7 +95,7 @@ with st.sidebar.expander("Asisten AI", expanded=False):
         st.caption("Dapatkan API key gratis di aistudio.google.com/apikey")
 
 if "tampilkan_panel_ai" not in st.session_state:
-    st.session_state.tampilkan_panel_ai = True
+    st.session_state.tampilkan_panel_ai = False
 with st.sidebar.container(border=True):
     st.session_state.tampilkan_panel_ai = st.checkbox(
         "Tampilkan panel Asisten AI di sisi kanan",
@@ -280,20 +299,30 @@ def ambil_harga_terkini(ticker: str):
 # ============================================================
 # 5. Layout dua bagian: konten utama (kiri) + panel Asisten AI (kanan, fixed sidebar)
 # ============================================================
-tampilkan_panel_ai = st.session_state.get("tampilkan_panel_ai", True)
+tampilkan_panel_ai = st.session_state.get("tampilkan_panel_ai", False)
 LEBAR_PANEL_AI = 380  # px
+PADDING_KANAN_AKTIF = LEBAR_PANEL_AI + 24 if tampilkan_panel_ai else 0
 
-if tampilkan_panel_ai:
-    st.markdown(
-        f"""
-        <style>
+st.markdown(
+    f"""
+    <style>
+    [data-testid="stMainBlockContainer"], .main .block-container {{
+        padding-right: {PADDING_KANAN_AKTIF}px !important;
+        transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
+    }}
+
+    /* Di layar sempit (HP), panel AI jadi overlay penuh (bukan sisip di
+       samping), jadi konten utama TIDAK perlu diberi ruang kosong di
+       kanan — kalau tetap dipaksa, layar HP jadi kepencet sempit sekali. */
+    @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
-            padding-right: {LEBAR_PANEL_AI + 24}px !important;
+            padding-right: 1rem !important;
         }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 col_main = st.container()
 
@@ -477,18 +506,20 @@ with col_main:
 # ============================================================
 # 6. Asisten AI — panel fixed di sisi kanan (menyatu seperti sidebar bawaan,
 #    tapi di kanan), polos tanpa efek dekoratif, sama seperti di halaman
-#    Pembanding Saham. Muncul dengan animasi slide-in setiap kali dibuka.
+#    Pembanding Saham.
 # ============================================================
-if tampilkan_panel_ai:
-    with st.container(key="panel_asisten_ai"):
+with st.container(key="panel_asisten_ai"):
+
+        # Container ini SELALU di-render (tidak dibungkus if) supaya node-nya
+        # tetap ada di DOM — buka/tutup panel cuma menggeser transform & opacity,
+        # bukan memasang/melepas elemen, sehingga transisinya mulus (bukan lompat).
+        _transform_panel = "translateX(0)" if tampilkan_panel_ai else "translateX(100%)"
+        _opacity_panel = 1 if tampilkan_panel_ai else 0
+        _pointer_panel = "auto" if tampilkan_panel_ai else "none"
 
         st.markdown(
             f"""
             <style>
-            @keyframes bukaPanelAi {{
-                from {{ transform: translateX(100%); opacity: 0; }}
-                to {{ transform: translateX(0); opacity: 1; }}
-            }}
             .st-key-panel_asisten_ai {{
                 position: fixed;
                 top: 0;
@@ -501,7 +532,10 @@ if tampilkan_panel_ai:
                 padding: 16px;
                 padding-bottom: 90px;
                 z-index: 999999;
-                animation: bukaPanelAi 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+                transform: {_transform_panel};
+                opacity: {_opacity_panel};
+                pointer-events: {_pointer_panel};
+                transition: transform 0.18s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.15s ease;
             }}
             .gemini-judul {{
                 font-size: 16px;
@@ -561,6 +595,19 @@ if tampilkan_panel_ai:
             }}
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
+            }}
+
+            /* Di HP (layar sempit), panel jadi overlay penuh layar biar
+               tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
+            @media (max-width: 768px) {{
+                .st-key-panel_asisten_ai {{
+                    width: 100vw !important;
+                    border-left: none;
+                }}
+                .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
+                    width: calc(100vw - 32px) !important;
+                    right: 16px !important;
+                }}
             }}
             </style>
             """,

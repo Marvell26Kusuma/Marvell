@@ -1,5 +1,8 @@
 import csv
 import io
+import json
+import time
+from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -112,40 +115,130 @@ def render_bintang(dampak: str) -> str:
 
 
 # ============================================================
+# 2b. Cache ke DISK (bukan cuma memori) — supaya restart aplikasi
+#     tidak langsung memicu request baru ke ForexFactory/MSCI dan
+#     mengganggu batas rate limit mereka. Kalau permintaan baru gagal
+#     (mis. kena 429), otomatis jatuh balik ke data cache terakhir
+#     yang masih tersimpan di disk, sekalipun sudah agak basi.
+# ============================================================
+BASE_DIR = Path(__file__).resolve().parent.parent
+DIR_CACHE = BASE_DIR / "cache_kalender_ekonomi"
+DIR_CACHE.mkdir(exist_ok=True)
+
+TTL_FF_DETIK = 1800       # 30 menit — cocok dengan batas rate limit ForexFactory
+TTL_MSCI_DETIK = 21600    # 6 jam — jadwal MSCI jarang berubah
+
+
+def _path_cache(nama_file: str) -> Path:
+    return DIR_CACHE / nama_file
+
+
+def _muat_cache_disk(nama_file: str):
+    p = _path_cache(nama_file)
+    if not p.exists():
+        return None, None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            isi = json.load(f)
+        return isi["data"], isi["waktu_ambil"]
+    except Exception:
+        return None, None
+
+
+def _simpan_cache_disk(nama_file: str, data: list, waktu_ambil: float):
+    try:
+        with open(_path_cache(nama_file), "w", encoding="utf-8") as f:
+            json.dump({"data": data, "waktu_ambil": waktu_ambil}, f)
+    except Exception:
+        pass  # gagal simpan cache bukan hal fatal
+
+
+def _header_permintaan():
+    # Header yang lebih lengkap/mirip browser asli, supaya lebih kecil
+    # kemungkinan diblokir sebagai bot oleh server sumbernya.
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+        "Referer": "https://www.forexfactory.com/",
+    }
+
+
+# ============================================================
 # 3. Ambil data kalender ekonomi dari ForexFactory (feed publik)
 #    Catatan: ForexFactory membatasi permintaan file kalender mingguan
-#    (maks. sekitar 2x per 5 menit), jadi hasil di-cache 30 menit.
-#    Feed publik mereka hanya menyediakan 3 periode: minggu lalu, minggu
-#    ini, dan minggu depan — belum ada cakupan bulanan dari sumber ini.
+#    (maks. sekitar 2x per 5 menit). Kalau kena 429 (rate limit) atau
+#    error jaringan lain, otomatis pakai cache disk terakhir yang masih
+#    ada, dengan catatan seberapa basi datanya.
 # ============================================================
-@st.cache_data(ttl=1800, show_spinner=False)
-def ambil_kalender_ff(url: str):
-    try:
-        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            return pd.DataFrame(), None
-        df = pd.DataFrame(data)
-        df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_convert(WIB)
-        df = df.sort_values("date").reset_index(drop=True)
-        df = df.rename(columns={
-            "title": "Event", "country": "MataUang", "date": "Waktu",
-            "impact": "Dampak", "forecast": "Forecast", "previous": "Previous",
-        })
-        return df, None
-    except Exception as e:
-        return pd.DataFrame(), str(e)
+def ambil_kalender_ff(url: str, nama_periode: str, paksa_refresh: bool = False):
+    nama_file = f"ff_{nama_periode.replace(' ', '_').lower()}.json"
+    data_disk, waktu_disk = _muat_cache_disk(nama_file)
+    umur_detik = (time.time() - waktu_disk) if waktu_disk else None
+
+    perlu_fetch = paksa_refresh or data_disk is None or (umur_detik is not None and umur_detik > TTL_FF_DETIK)
+
+    if perlu_fetch:
+        try:
+            resp = requests.get(url, timeout=15, headers=_header_permintaan())
+            if resp.status_code == 429:
+                if data_disk is not None:
+                    return _bangun_df_ff(data_disk), None, waktu_disk, True  # pakai cache lama + tandai "basi karena rate limit"
+                retry_after = resp.headers.get("Retry-After", "beberapa menit")
+                return pd.DataFrame(), f"Dibatasi oleh ForexFactory (429). Coba lagi setelah {retry_after}.", None, False
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                if data_disk is not None:
+                    return _bangun_df_ff(data_disk), None, waktu_disk, True
+                return pd.DataFrame(), None, None, False
+            _simpan_cache_disk(nama_file, data, time.time())
+            return _bangun_df_ff(data), None, time.time(), False
+        except Exception as e:
+            if data_disk is not None:
+                return _bangun_df_ff(data_disk), None, waktu_disk, True
+            return pd.DataFrame(), str(e), None, False
+    else:
+        return _bangun_df_ff(data_disk), None, waktu_disk, False
+
+
+def _bangun_df_ff(data: list) -> pd.DataFrame:
+    df = pd.DataFrame(data)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_convert(WIB)
+    df = df.sort_values("date").reset_index(drop=True)
+    df = df.rename(columns={
+        "title": "Event", "country": "MataUang", "date": "Waktu",
+        "impact": "Dampak", "forecast": "Forecast", "previous": "Previous",
+    })
+    return df
 
 
 # ============================================================
 # 4. Ambil jadwal review indeks MSCI dari rilis resmi msci.com
 #    (berisi 8 jadwal review reguler berikutnya, diterbitkan tiap kuartal).
+#    Sama seperti kalender FF: pakai cache disk + fallback kalau gagal.
 # ============================================================
-@st.cache_data(ttl=21600, show_spinner=False)
-def ambil_jadwal_msci():
+def ambil_jadwal_msci(paksa_refresh: bool = False):
+    nama_file = "msci_jadwal.json"
+    data_disk, waktu_disk = _muat_cache_disk(nama_file)
+    umur_detik = (time.time() - waktu_disk) if waktu_disk else None
+
+    perlu_fetch = paksa_refresh or data_disk is None or (umur_detik is not None and umur_detik > TTL_MSCI_DETIK)
+
+    if not perlu_fetch:
+        return _bangun_df_msci(data_disk), None, waktu_disk, False
+
     try:
-        resp = requests.get(URL_MSCI_CSV, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(URL_MSCI_CSV, timeout=15, headers=_header_permintaan())
+        if resp.status_code == 429:
+            if data_disk is not None:
+                return _bangun_df_msci(data_disk), None, waktu_disk, True
+            return pd.DataFrame(), "Dibatasi oleh server MSCI (429). Coba lagi nanti.", None, False
         resp.raise_for_status()
         teks = resp.text
 
@@ -165,26 +258,33 @@ def ambil_jadwal_msci():
                     continue
                 bagian = row[0].split("|")
                 if len(bagian) >= 4 and bagian[0].strip() != "Quarter":
-                    kuartal = bagian[0].strip()
-                    event_nama = bagian[1].strip().strip('"')
-                    tgl_umum = bagian[2].strip()
-                    tgl_efektif = bagian[3].strip()
                     baris_data.append({
-                        "Kuartal": kuartal,
-                        "Event": event_nama,
-                        "Tanggal Pengumuman": tgl_umum,
-                        "Tanggal Efektif": tgl_efektif,
+                        "Kuartal": bagian[0].strip(),
+                        "Event": bagian[1].strip().strip('"'),
+                        "Tanggal Pengumuman": bagian[2].strip(),
+                        "Tanggal Efektif": bagian[3].strip(),
                     })
 
         if not baris_data:
-            return pd.DataFrame(), "Format data MSCI berubah, tidak bisa diproses."
+            if data_disk is not None:
+                return _bangun_df_msci(data_disk), None, waktu_disk, True
+            return pd.DataFrame(), "Format data MSCI berubah, tidak bisa diproses.", None, False
 
-        df = pd.DataFrame(baris_data)
-        df["_tgl_efektif_dt"] = pd.to_datetime(df["Tanggal Efektif"], format="%m-%d-%Y", errors="coerce")
-        df["_tgl_umum_dt"] = pd.to_datetime(df["Tanggal Pengumuman"], format="%m-%d-%Y", errors="coerce")
-        return df, None
+        _simpan_cache_disk(nama_file, baris_data, time.time())
+        return _bangun_df_msci(baris_data), None, time.time(), False
     except Exception as e:
-        return pd.DataFrame(), str(e)
+        if data_disk is not None:
+            return _bangun_df_msci(data_disk), None, waktu_disk, True
+        return pd.DataFrame(), str(e), None, False
+
+
+def _bangun_df_msci(baris_data: list) -> pd.DataFrame:
+    df = pd.DataFrame(baris_data)
+    if df.empty:
+        return df
+    df["_tgl_efektif_dt"] = pd.to_datetime(df["Tanggal Efektif"], format="%m-%d-%Y", errors="coerce")
+    df["_tgl_umum_dt"] = pd.to_datetime(df["Tanggal Pengumuman"], format="%m-%d-%Y", errors="coerce")
+    return df
 
 
 st.sidebar.header("Filter Kalender Ekonomi")
@@ -199,20 +299,43 @@ st.sidebar.caption(
     "belum ada cakupan bulanan langsung dari sumber ini."
 )
 
+# --- Cooldown tombol refresh: cegah spam request yang memicu rate limit ---
+JEDA_REFRESH_DETIK = 60
+if "waktu_refresh_terakhir" not in st.session_state:
+    st.session_state.waktu_refresh_terakhir = 0
+
+sisa_jeda = JEDA_REFRESH_DETIK - (time.time() - st.session_state.waktu_refresh_terakhir)
+
 col_judul, col_refresh = st.columns([5, 1])
 with col_refresh:
-    if st.button("Refresh Data", use_container_width=True):
-        ambil_kalender_ff.clear()
-        ambil_jadwal_msci.clear()
-        st.rerun()
+    tombol_refresh_diklik = st.button(
+        "Refresh Data" if sisa_jeda <= 0 else f"Tunggu {int(sisa_jeda)}d",
+        use_container_width=True,
+        disabled=sisa_jeda > 0,
+    )
+    if tombol_refresh_diklik:
+        st.session_state.waktu_refresh_terakhir = time.time()
 
-df_ff, error_ff = ambil_kalender_ff(PETA_URL_PERIODE[periode_dipilih])
-df_msci, error_msci = ambil_jadwal_msci()
+paksa_refresh = tombol_refresh_diklik
+
+df_ff, error_ff, waktu_ambil_ff, ff_dari_cache_basi = ambil_kalender_ff(
+    PETA_URL_PERIODE[periode_dipilih], periode_dipilih, paksa_refresh
+)
+df_msci, error_msci, waktu_ambil_msci, msci_dari_cache_basi = ambil_jadwal_msci(paksa_refresh)
 
 if error_ff:
     st.error(f"Gagal mengambil kalender ekonomi dari ForexFactory: {error_ff}")
+elif ff_dari_cache_basi and waktu_ambil_ff:
+    menit_lalu = int((time.time() - waktu_ambil_ff) / 60)
+    st.warning(
+        f"ForexFactory sedang membatasi permintaan (rate limit) atau gagal diakses — "
+        f"menampilkan data cache terakhir dari {menit_lalu} menit lalu."
+    )
+
 if error_msci:
     st.warning(f"Gagal mengambil jadwal review MSCI: {error_msci}")
+elif msci_dari_cache_basi and waktu_ambil_msci:
+    st.caption("Menampilkan jadwal MSCI dari cache lokal (sumber sedang tidak bisa diakses).")
 
 st.markdown("---")
 
@@ -374,7 +497,7 @@ if not df_tampil.empty:
 st.subheader(f"Jadwal — {periode_dipilih}")
 
 if df_ff.empty:
-    st.info("Data kalender belum tersedia. Coba klik 'Refresh Data' di atas.")
+    st.info("Data kalender belum tersedia. Coba klik 'Refresh Data' di atas (kalau tidak sedang cooldown).")
 elif df_tampil.empty:
     st.info("Tidak ada event yang cocok dengan filter yang dipilih.")
 else:
@@ -421,7 +544,7 @@ st.caption(
 )
 
 if df_msci.empty:
-    st.info("Jadwal review MSCI belum tersedia. Coba klik 'Refresh Data' di atas.")
+    st.info("Jadwal review MSCI belum tersedia. Coba klik 'Refresh Data' di atas (kalau tidak sedang cooldown).")
 else:
     df_msci_tampil = df_msci[["Kuartal", "Event", "Tanggal Pengumuman", "Tanggal Efektif"]].copy()
     st.dataframe(df_msci_tampil, use_container_width=True, hide_index=True)
