@@ -28,7 +28,27 @@ st.title("Pembanding Laporan Keuangan Saham")
 st.caption("Bandingkan rasio keuangan beberapa emiten sekaligus — cari dari 900+ saham IDX, pilih dari kategori sektor, dan tampilkan grafik per rasio.")
 
 # ============================================================
-# 1b. Tampilan & Tema — kustomisasi warna latar website + warna candlestick
+# 1b. Bersihkan sisa overlay panel Asisten AI dari halaman lain. Streamlit
+#     multi-page itu satu dokumen browser yang isinya gonta-ganti (bukan
+#     reload penuh), jadi elemen yang pernah ditempel ke window.parent.document
+#     di halaman lain bisa "nyangkut" kalau belum sempat dibersihkan sebelum
+#     pindah halaman. Ini jaring pengaman: singkirkan kalau kebetulan masih ada.
+# ============================================================
+components.html(
+    """
+    <script>
+    (function() {
+        const parentDoc = window.parent.document;
+        const backdrop = parentDoc.getElementById('ai-panel-backdrop');
+        if (backdrop) { backdrop.remove(); }
+    })();
+    </script>
+    """,
+    height=0,
+)
+
+# ============================================================
+# 1c. Tampilan & Tema — kustomisasi warna latar website + warna candlestick
 # ============================================================
 TEMA_PRESET = {
     "Gelap Klasik": {"app_bg": "#0e1117", "sidebar_bg": "#131722", "teks": "#e6e6e6"},
@@ -65,36 +85,26 @@ st.markdown(
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }}
 
-    /* Cegah scroll horizontal — panel Asisten AI yang digeser ke luar layar
-       (translateX) tetap dihitung lebarnya oleh browser kalau ini tidak dikunci.
-       Ditarget ke beberapa kemungkinan container scroll Streamlit sekaligus,
-       karena versi Streamlit berbeda-beda punya elemen scroll utama yang beda. */
-    html {{
+    /* Cegah scroll horizontal HALAMAN — cukup dikunci di html/body saja.
+       JANGAN dikunci juga di container dalam (.main, stMainBlockContainer,
+       dst), karena itu justru mengganggu widget yang MEMANG perlu scroll
+       horizontal sendiri (tabel rasio, kartu saham). */
+    html, body {{
         overflow-x: hidden !important;
-        max-width: 100vw !important;
-        background-color: {app_bg} !important;
-    }}
-    body {{
-        overflow-x: hidden !important;
-        background-color: {app_bg} !important;
-        overscroll-behavior-y: none; /* cegah flash putih pas rubber-band scroll di iOS/Android */
-    }}
-    .stApp,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"],
-    [data-testid="stMainBlockContainer"],
-    .main,
-    section.main {{
-        overflow-x: hidden !important;
-        max-width: 100vw !important;
-        background-color: {app_bg} !important;
+        background-color: {app_bg};
     }}
 
     .stApp {{
+        background-color: {app_bg};
         color: {teks_warna};
     }}
+    /* Header/toolbar bawaan Streamlit (terutama kelihatan di HP) defaultnya
+       bisa jadi strip putih di atas layar sebelum/saat CSS tema dimuat. */
+    [data-testid="stHeader"], [data-testid="stToolbar"] {{
+        background: transparent !important;
+    }}
     [data-testid="stSidebar"] {{
-        background-color: {sidebar_bg} !important;
+        background-color: {sidebar_bg};
         border-right: 1px solid rgba(128,128,128,0.12);
     }}
     [data-testid="stSidebar"] * {{
@@ -114,10 +124,8 @@ st.markdown(
     h1 {{ font-weight: 700; letter-spacing: -0.02em; }}
     h2, h3 {{ font-weight: 600; letter-spacing: -0.01em; }}
 
-    /* Tombol — rounded, border tipis, background gelap konsisten (bukan putih bawaan) */
+    /* Tombol — rounded, border tipis, transisi halus */
     .stButton > button, .stDownloadButton > button {{
-        background-color: rgba(255,255,255,0.04);
-        color: {teks_warna};
         border-radius: 8px;
         border: 1px solid rgba(128,128,128,0.25);
         font-weight: 500;
@@ -127,19 +135,11 @@ st.markdown(
         border-color: #2962ff;
         color: #2962ff;
     }}
-    .stButton > button:disabled {{
-        background-color: rgba(255,255,255,0.02);
-        color: rgba(255,255,255,0.35) !important;
-    }}
 
-    /* Expander — background gelap (bawaannya putih kalau tidak di-set) */
+    /* Expander — lebih rapi, border tipis, tanpa bayangan berat */
     [data-testid="stExpander"] {{
-        background-color: rgba(255,255,255,0.02);
         border: 1px solid rgba(128,128,128,0.15);
         border-radius: 10px;
-    }}
-    [data-testid="stExpander"] summary {{
-        background-color: transparent !important;
     }}
 
     /* Tabs — garis bawah lebih halus */
@@ -150,36 +150,9 @@ st.markdown(
         border-radius: 8px 8px 0 0;
     }}
 
-    /* Input, selectbox, multiselect — background gelap konsisten (BaseWeb default-nya putih) */
-    .stTextInput input,
-    .stNumberInput input,
-    .stDateInput input,
-    .stSelectbox > div > div,
-    .stMultiSelect > div > div,
-    [data-baseweb="select"] > div,
-    [data-baseweb="input"] {{
-        background-color: rgba(255,255,255,0.04) !important;
-        color: {teks_warna} !important;
+    /* Input & selectbox — rounded konsisten */
+    .stTextInput input, .stSelectbox > div > div, .stMultiSelect > div > div {{
         border-radius: 8px !important;
-        border-color: rgba(128,128,128,0.25) !important;
-    }}
-    /* "Chip" pilihan yang sudah dipilih di dalam multiselect */
-    [data-baseweb="tag"] {{
-        background-color: rgba(41,98,255,0.25) !important;
-    }}
-
-    /* Menu dropdown/popover BaseWeb dirender di luar pohon DOM utama (portal ke
-       document.body), jadi harus ditarget terpisah supaya ikut gelap juga —
-       ini penyebab utama kotak putih nyala pas buka dropdown di HP. */
-    [data-baseweb="popover"],
-    [data-baseweb="menu"],
-    ul[role="listbox"],
-    li[role="option"] {{
-        background-color: {sidebar_bg} !important;
-        color: {teks_warna} !important;
-    }}
-    li[role="option"]:hover {{
-        background-color: rgba(255,255,255,0.08) !important;
     }}
 
     /* Metric — angka lebih tegas */
@@ -433,7 +406,9 @@ st.markdown(
     <style>
     /* Sisakan ruang di kanan supaya konten utama tidak ketutup panel AI yang fixed.
        Selalu di-render (bukan kondisional) supaya transition-nya jalan mulus
-       saat panel dibuka/ditutup, bukan lompat instan. */
+       saat panel dibuka/ditutup, bukan lompat instan. Hanya berlaku di layar
+       lebar — di HP di-nolkan lewat media query di bawah karena panel jadi
+       overlay penuh layar di sana. */
     [data-testid="stMainBlockContainer"], .main .block-container {{
         padding-right: {PADDING_KANAN_AKTIF}px !important;
         transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
@@ -445,71 +420,12 @@ st.markdown(
     @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
             padding-right: 1rem !important;
+            transition: none !important;
         }}
-
-        /* Streamlit otomatis nge-stack st.columns() ke bawah kalau layar
-           sempit — di sini dipaksa TETAP sejajar (nowrap) dan boleh
-           discroll ke samping, bukan ditumpuk ke bawah semua. */
-        [data-testid="stHorizontalBlock"] {{
-            flex-wrap: nowrap !important;
-            overflow-x: auto !important;
-            -webkit-overflow-scrolling: touch;
-            scrollbar-width: thin;
-        }}
-        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-        [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
-            flex: 0 0 auto !important;
-            width: auto !important;
-            min-width: 200px;
-        }}
-    }}
-
-    /* Scroll sentuhan yang lebih halus di semua elemen yang bisa digeser */
-    .scroll-container, [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {{
-        -webkit-overflow-scrolling: touch;
-        scroll-behavior: smooth;
     }}
     </style>
     """,
     unsafe_allow_html=True,
-)
-
-# Backdrop khusus HP: kalau panel AI kebuka di layar sempit, area di luar
-# panel jadi bisa diklik/ditap buat nutup panel-nya lagi (klik di mana pun
-# selain panel = otomatis uncheck checkbox "Tampilkan Asisten AI" di sidebar).
-# Pakai components.html (bukan st.markdown) karena butuh <script> yang bisa
-# benar-benar dieksekusi browser, lalu dari situ "menjangkau" dokumen utama
-# lewat window.parent supaya bisa membuat backdrop & mengklik checkbox aslinya.
-components.html(
-    f"""
-    <script>
-    (function() {{
-        const parentDoc = window.parent.document;
-        let backdrop = parentDoc.getElementById('ai-panel-backdrop');
-        if (!backdrop) {{
-            backdrop = parentDoc.createElement('div');
-            backdrop.id = 'ai-panel-backdrop';
-            backdrop.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0;' +
-                'background:rgba(0,0,0,0.35); z-index:999998; display:none;';
-            parentDoc.body.appendChild(backdrop);
-            backdrop.addEventListener('click', function() {{
-                const semuaCheckbox = parentDoc.querySelectorAll('[data-testid="stCheckbox"]');
-                for (const cb of semuaCheckbox) {{
-                    if (cb.innerText && cb.innerText.includes('Tampilkan Asisten AI')) {{
-                        const input = cb.querySelector('input[type="checkbox"]');
-                        if (input) {{ input.click(); }}
-                        break;
-                    }}
-                }}
-            }});
-        }}
-        const panelTerbuka = {str(tampilkan_panel_ai).lower()};
-        const layarSempit = window.parent.innerWidth <= 768;
-        backdrop.style.display = (panelTerbuka && layarSempit) ? 'block' : 'none';
-    }})();
-    </script>
-    """,
-    height=0,
 )
 
 col_main = st.container()
@@ -897,7 +813,9 @@ with col_main:
         <style>
         .scroll-container {
             display: flex;
+            flex-wrap: nowrap;
             overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
             gap: 14px;
             padding: 4px 4px 16px 4px;
         }
@@ -1120,6 +1038,7 @@ with col_main:
     # 10. Tabel & Grafik Perbandingan per Kategori Rasio
     # ============================================================
     st.subheader("Perbandingan Rasio Keuangan Lengkap")
+    st.caption("Geser tabel ke samping ⟶ untuk melihat semua kolom rasio di layar sempit.")
 
     KATEGORI_RASIO = {
         "Valuasi": ["PER (Trailing)", "PER (Forward)", "PBV", "PEG Ratio",
@@ -1362,6 +1281,11 @@ def _proses_prompt_ai(kotak_chat, prompt_teks: str):
     simpan_memori_ai(st.session_state.riwayat_chat_saham, st.session_state.get("catatan_preferensi_ai", ""))
 
 
+def _tutup_panel_ai():
+    st.session_state.tampilkan_panel_ai = False
+    st.session_state.toggle_panel_ai = False
+
+
 with st.container(key="panel_asisten_ai"):
 
         # -- Panel dibuat fixed di sisi kanan layar (position:fixed), menyatu
@@ -1384,6 +1308,7 @@ with st.container(key="panel_asisten_ai"):
                 width: {LEBAR_PANEL_AI}px;
                 height: 100vh;
                 overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
                 background: #12161f;
                 border-left: 1px solid rgba(255,255,255,0.08);
                 padding: 16px;
@@ -1392,9 +1317,8 @@ with st.container(key="panel_asisten_ai"):
                 transform: {_transform_panel};
                 opacity: {_opacity_panel};
                 pointer-events: {_pointer_panel};
-                transition: transform 0.18s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.15s ease;
                 will-change: transform;
-                -webkit-overflow-scrolling: touch;
+                transition: transform 0.2s cubic-bezier(0.2, 0, 0.2, 1), opacity 0.18s ease;
             }}
             .gemini-judul {{
                 font-size: 16px;
@@ -1406,7 +1330,7 @@ with st.container(key="panel_asisten_ai"):
                 font-size: 12px;
                 color: #8891aa;
                 line-height: 1.4;
-                margin: 0 0 12px 0;
+                margin: 0 28px 12px 0;
             }}
             .gemini-greeting {{
                 padding: 16px 2px 4px 2px;
@@ -1456,6 +1380,25 @@ with st.container(key="panel_asisten_ai"):
                 color: #eef0fb !important;
             }}
 
+            /* Tombol tutup (X) — dipin pojok kanan atas panel */
+            .st-key-tombol_tutup_ai {{
+                position: absolute;
+                top: 14px;
+                right: 14px;
+                z-index: 2;
+            }}
+            .st-key-tombol_tutup_ai .stButton > button {{
+                width: 30px;
+                height: 30px;
+                padding: 0 !important;
+                border-radius: 50% !important;
+                font-size: 15px;
+                line-height: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+
             /* Di HP (layar sempit), panel jadi overlay penuh layar biar
                tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
             @media (max-width: 768px) {{
@@ -1472,6 +1415,11 @@ with st.container(key="panel_asisten_ai"):
             """,
             unsafe_allow_html=True,
         )
+
+        # Tombol tutup (X) — cara paling gampang buat nutup panel di HP,
+        # nggak perlu buka sidebar dulu atau ngandelin klik area backdrop.
+        with st.container(key="tombol_tutup_ai"):
+            st.button("✕", key="btn_tutup_panel_ai", on_click=_tutup_panel_ai)
 
         st.markdown(
             """
