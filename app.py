@@ -412,6 +412,44 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Backdrop khusus HP: kalau panel AI kebuka di layar sempit, area di luar
+# panel jadi bisa diklik/ditap buat nutup panel-nya lagi (klik di mana pun
+# selain panel = otomatis uncheck checkbox "Tampilkan Asisten AI" di sidebar).
+# Pakai components.html (bukan st.markdown) karena butuh <script> yang bisa
+# benar-benar dieksekusi browser, lalu dari situ "menjangkau" dokumen utama
+# lewat window.parent supaya bisa membuat backdrop & mengklik checkbox aslinya.
+components.html(
+    f"""
+    <script>
+    (function() {{
+        const parentDoc = window.parent.document;
+        let backdrop = parentDoc.getElementById('ai-panel-backdrop');
+        if (!backdrop) {{
+            backdrop = parentDoc.createElement('div');
+            backdrop.id = 'ai-panel-backdrop';
+            backdrop.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0;' +
+                'background:rgba(0,0,0,0.35); z-index:999998; display:none;';
+            parentDoc.body.appendChild(backdrop);
+            backdrop.addEventListener('click', function() {{
+                const semuaCheckbox = parentDoc.querySelectorAll('[data-testid="stCheckbox"]');
+                for (const cb of semuaCheckbox) {{
+                    if (cb.innerText && cb.innerText.includes('Tampilkan Asisten AI')) {{
+                        const input = cb.querySelector('input[type="checkbox"]');
+                        if (input) {{ input.click(); }}
+                        break;
+                    }}
+                }}
+            }});
+        }}
+        const panelTerbuka = {str(tampilkan_panel_ai).lower()};
+        const layarSempit = window.parent.innerWidth <= 768;
+        backdrop.style.display = (panelTerbuka && layarSempit) ? 'block' : 'none';
+    }})();
+    </script>
+    """,
+    height=0,
+)
+
 col_main = st.container()
 
 with col_main:
