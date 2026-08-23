@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import requests
 
@@ -14,6 +15,26 @@ import requests
 # 1. Konfigurasi Halaman
 # ============================================================
 st.set_page_config(page_title="Kalender Ekonomi", layout="wide", page_icon="calendar")
+
+# Halaman ini tidak punya panel Asisten AI, tapi kalau sebelumnya kamu buka
+# halaman lain (Pembanding Saham / Portfolio Tracker) dengan panel itu lagi
+# terbuka, ada elemen "backdrop" (lapisan gelap penutup layar) yang ditempel
+# langsung ke document.body lewat JS — kalau navigasi antar-halaman tidak
+# full-reload, elemen itu bisa "nyangkut" dan bikin seluruh halaman ini
+# kelihatan digelapin rata. Baris ini memastikan backdrop itu disembunyikan
+# begitu halaman ini dibuka.
+components.html(
+    """
+    <script>
+    (function() {
+        const b = window.parent.document.getElementById('ai-panel-backdrop');
+        if (b) { b.style.display = 'none'; }
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 st.title("Kalender Ekonomi")
 st.caption(
     "Jadwal rilis data ekonomi penting (CPI, NFP, suku bunga, GDP, PMI, dll) untuk minggu lalu/ini/depan "
@@ -35,6 +56,7 @@ st.markdown(
         overflow-x: hidden !important;
         max-width: 100vw !important;
         background-color: #0e1117 !important;
+        color-scheme: dark;
     }
     body {
         overflow-x: hidden !important;
@@ -106,7 +128,14 @@ st.markdown(
     li[role="option"]:hover {
         background-color: rgba(255,255,255,0.08) !important;
     }
+    *, *::before, *::after {
+        box-sizing: border-box;
+    }
     @media (max-width: 768px) {
+        [data-testid="stMainBlockContainer"], .main .block-container {
+            padding-left: 1rem !important;
+        }
+
         [data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             overflow-x: auto !important;
@@ -118,23 +147,34 @@ st.markdown(
             width: auto !important;
             min-width: 200px;
         }
+
+        [data-testid="stDataFrame"],
+        [data-testid="stImage"],
+        iframe,
+        .element-container {
+            max-width: 100% !important;
+        }
+
+        h1 { font-size: 1.6rem !important; }
+        h2 { font-size: 1.25rem !important; }
+
+        .sorotan-card { min-width: 240px; }
     }
     [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {
         -webkit-overflow-scrolling: touch;
         scroll-behavior: smooth;
     }
-    }
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
 
     .sorotan-card {
-        background-color: rgba(151, 166, 195, 0.10);
+        background-color: #161b26;
         border: 1px solid rgba(151, 166, 195, 0.30);
         border-radius: 12px;
         padding: 16px 18px;
         height: 100%;
     }
     .sorotan-card .label { font-size: 12px; color: #8a8f99; margin-bottom: 4px; }
-    .sorotan-card .judul { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+    .sorotan-card .judul { font-size: 16px; font-weight: 700; margin-bottom: 2px; color: #e6e6e6; }
     .sorotan-card .sub { font-size: 13px; color: #a8adb8; }
 
     .badge-impact {
@@ -153,10 +193,26 @@ st.markdown(
         padding: 8px 4px;
         border-bottom: 1px solid rgba(151, 166, 195, 0.14);
         font-size: 13.5px;
+        color: #e6e6e6;
     }
     .event-row .waktu { width: 64px; color: #8a8f99; flex-shrink: 0; }
     .event-row .mata-uang { width: 46px; flex-shrink: 0; font-weight: 600; }
     .event-row .judul-event { flex: 1; }
+
+    /* Di HP, kartu sorotan (3 kolom) dikecilkan lebarnya supaya waktu
+       discroll ke samping, kartu berikutnya "mengintip" di tepi layar
+       — bukan kepotong tanggung tanpa jejak kalau discroll. */
+    @media (max-width: 768px) {
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            min-width: 82vw;
+            scroll-snap-align: start;
+        }
+        [data-testid="stHorizontalBlock"] {
+            scroll-snap-type: x mandatory;
+            padding-right: 12px;
+        }
+    }
     .event-row .angka { width: 70px; text-align: right; color: #a8adb8; flex-shrink: 0; font-size: 12.5px; }
     </style>
     """,

@@ -73,6 +73,7 @@ st.markdown(
         overflow-x: hidden !important;
         max-width: 100vw !important;
         background-color: {app_bg} !important;
+        color-scheme: dark; /* cegah Chrome/browser auto-invert warna halaman yang sudah gelap */
     }}
     body {{
         overflow-x: hidden !important;
@@ -439,12 +440,19 @@ st.markdown(
         transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
     }}
 
+    /* Cegah elemen manapun "tembus" keluar tepi layar HP akibat padding/border
+       yang menambah lebar di luar perhitungan width normal. */
+    *, *::before, *::after {{
+        box-sizing: border-box;
+    }}
+
     /* Di layar sempit (HP), panel AI jadi overlay penuh (bukan sisip di
        samping), jadi konten utama TIDAK perlu diberi ruang kosong di
        kanan — kalau tetap dipaksa, layar HP jadi kepencet sempit sekali. */
     @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
             padding-right: 1rem !important;
+            padding-left: 1rem !important;
         }}
 
         /* Streamlit otomatis nge-stack st.columns() ke bawah kalau layar
@@ -462,6 +470,18 @@ st.markdown(
             width: auto !important;
             min-width: 200px;
         }}
+
+        /* Elemen lebar (dataframe, chart, gambar) dikunci max 100% lebar
+           layar supaya tidak melebar keluar (tembus tepi) di HP. */
+        [data-testid="stDataFrame"],
+        [data-testid="stImage"],
+        iframe,
+        .element-container {{
+            max-width: 100% !important;
+        }}
+
+        h1 {{ font-size: 1.6rem !important; }}
+        h2 {{ font-size: 1.25rem !important; }}
     }}
 
     /* Scroll sentuhan yang lebih halus di semua elemen yang bisa digeser */

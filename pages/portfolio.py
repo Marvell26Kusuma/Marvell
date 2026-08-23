@@ -38,6 +38,7 @@ st.markdown(
         overflow-x: hidden !important;
         max-width: 100vw !important;
         background-color: #0e1117 !important;
+        color-scheme: dark;
     }
     body {
         overflow-x: hidden !important;
@@ -117,7 +118,15 @@ st.markdown(
         background-color: rgba(255,255,255,0.08) !important;
     }
 
+    *, *::before, *::after {
+        box-sizing: border-box;
+    }
+
     @media (max-width: 768px) {
+        [data-testid="stMainBlockContainer"], .main .block-container {
+            padding-left: 1rem !important;
+        }
+
         /* Streamlit otomatis nge-stack st.columns() ke bawah kalau layar
            sempit — di sini dipaksa TETAP sejajar (nowrap) dan boleh
            discroll ke samping, bukan ditumpuk ke bawah semua. */
@@ -132,6 +141,16 @@ st.markdown(
             width: auto !important;
             min-width: 200px;
         }
+
+        [data-testid="stDataFrame"],
+        [data-testid="stImage"],
+        iframe,
+        .element-container {
+            max-width: 100% !important;
+        }
+
+        h1 { font-size: 1.6rem !important; }
+        h2 { font-size: 1.25rem !important; }
     }
     [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {
         -webkit-overflow-scrolling: touch;
