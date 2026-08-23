@@ -1355,6 +1355,13 @@ SARAN_PROMPT_AI = [
 ]
 
 
+def _escape_dolar(teks: str) -> str:
+    """Escape tanda '$' supaya Streamlit tidak salah mengira itu sebagai
+    pembuka rumus LaTeX (efeknya teks jadi berantakan/pakai font miring
+    matematika kalau ada angka rupiah/dolar dalam jawaban AI)."""
+    return teks.replace("$", "\\$")
+
+
 def _proses_prompt_ai(kotak_chat, prompt_teks: str):
     """Kirim satu prompt ke AI, tampilkan langsung di kotak chat, dan simpan ke riwayat (+ memori permanen)."""
     st.session_state.riwayat_chat_saham.append({"role": "user", "content": prompt_teks})
@@ -1377,7 +1384,7 @@ def _proses_prompt_ai(kotak_chat, prompt_teks: str):
                     ),
                     st.session_state.riwayat_chat_saham,
                 )
-            st.markdown(jawaban)
+            st.markdown(_escape_dolar(jawaban))
     st.session_state.riwayat_chat_saham.append({"role": "assistant", "content": jawaban})
     simpan_memori_ai(st.session_state.riwayat_chat_saham, st.session_state.get("catatan_preferensi_ai", ""))
 
@@ -1471,22 +1478,15 @@ with st.container(key="panel_asisten_ai"):
                 border-radius: 10px;
                 padding: 10px 14px;
             }}
-            /* Chat input dibuat "sticky" (nempel ke bawah AREA SCROLL panel
-               itu sendiri), BUKAN "fixed" ke seluruh viewport layar. Ini
-               penting di HP: position:fixed + bottom:16px kacau kalau
-               keyboard di HP kebuka (viewport-nya berubah dinamis), bikin
-               kotak input "melompat" ke tengah layar. Sticky relatif ke
-               parent yang overflow-y:auto (panel-nya sendiri) jauh lebih
-               stabil menghadapi resize akibat keyboard. */
+            /* Chat input dibiarkan mengalir normal (bukan sticky/fixed) —
+               nempel di posisi paling bawah dari urutan konten panel,
+               bukan dipaksa "mengambang" secara visual. */
             .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
-                position: sticky;
-                bottom: 0;
                 width: 100%;
                 margin-top: 12px;
                 background: rgba(18,22,31,0.97);
                 border: 1px solid rgba(255,255,255,0.12);
                 border-radius: 10px;
-                z-index: 5;
             }}
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
@@ -1549,7 +1549,7 @@ with st.container(key="panel_asisten_ai"):
             else:
                 for pesan in st.session_state.riwayat_chat_saham:
                     with st.chat_message(pesan["role"]):
-                        st.markdown(pesan["content"])
+                        st.markdown(_escape_dolar(pesan["content"]))
 
         # Saran cepat — hanya ditampilkan sebelum obrolan dimulai.
         if not st.session_state.riwayat_chat_saham:

@@ -311,6 +311,12 @@ SARAN_PROMPT_AI_PF = [
 ]
 
 
+def _escape_dolar(teks: str) -> str:
+    """Escape tanda '$' supaya Streamlit tidak salah mengira itu sebagai
+    pembuka rumus LaTeX."""
+    return teks.replace("$", "\\$")
+
+
 def _proses_prompt_ai_pf(kotak_chat, prompt_teks: str, konteks_pf: str):
     """Kirim satu prompt ke AI, tampilkan langsung di kotak chat, dan simpan ke riwayat (+ memori permanen)."""
     st.session_state.riwayat_chat_portofolio.append({"role": "user", "content": prompt_teks})
@@ -331,7 +337,7 @@ def _proses_prompt_ai_pf(kotak_chat, prompt_teks: str, konteks_pf: str):
                     ),
                     st.session_state.riwayat_chat_portofolio,
                 )
-            st.markdown(jawaban)
+            st.markdown(_escape_dolar(jawaban))
     st.session_state.riwayat_chat_portofolio.append({"role": "assistant", "content": jawaban})
     simpan_memori_ai_pf(st.session_state.riwayat_chat_portofolio, st.session_state.get("catatan_preferensi_ai_pf", ""))
 
@@ -714,18 +720,14 @@ with st.container(key="panel_asisten_ai"):
                 border-radius: 10px;
                 padding: 10px 14px;
             }}
-            /* Chat input dibuat "sticky" (nempel ke bawah AREA SCROLL panel
-               itu sendiri), BUKAN "fixed" ke seluruh viewport layar — biar
-               tidak "melompat" ke tengah pas keyboard HP kebuka. */
+            /* Chat input dibiarkan mengalir normal (bukan sticky/fixed) —
+               nempel di posisi paling bawah dari urutan konten panel. */
             .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
-                position: sticky;
-                bottom: 0;
                 width: 100%;
                 margin-top: 12px;
                 background: rgba(18,22,31,0.97);
                 border: 1px solid rgba(255,255,255,0.12);
                 border-radius: 10px;
-                z-index: 5;
             }}
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
@@ -798,7 +800,7 @@ with st.container(key="panel_asisten_ai"):
             else:
                 for pesan in st.session_state.riwayat_chat_portofolio:
                     with st.chat_message(pesan["role"]):
-                        st.markdown(pesan["content"])
+                        st.markdown(_escape_dolar(pesan["content"]))
 
         if not st.session_state.riwayat_chat_portofolio:
             st.markdown('<div class="gemini-chip-label">Coba tanyakan</div>', unsafe_allow_html=True)
