@@ -18,11 +18,9 @@ st.set_page_config(page_title="Kalender Ekonomi", layout="wide", page_icon="cale
 
 # Halaman ini tidak punya panel Asisten AI, tapi kalau sebelumnya kamu buka
 # halaman lain (Pembanding Saham / Portfolio Tracker) dengan panel itu lagi
-# terbuka, ada elemen "backdrop" (lapisan gelap penutup layar) yang ditempel
-# langsung ke document.body lewat JS — kalau navigasi antar-halaman tidak
-# full-reload, elemen itu bisa "nyangkut" dan bikin seluruh halaman ini
-# kelihatan digelapin rata. Baris ini memastikan backdrop itu disembunyikan
-# begitu halaman ini dibuka.
+# terbuka, ada elemen "backdrop" (lapisan gelap penutup layar) yang mungkin
+# masih nempel di document.body. Baris ini memastikan backdrop itu
+# disembunyikan begitu halaman ini dibuka.
 components.html(
     """
     <script>
@@ -37,8 +35,8 @@ components.html(
 
 st.title("Kalender Ekonomi")
 st.caption(
-    "Jadwal rilis data ekonomi penting (CPI, NFP, suku bunga, GDP, PMI, dll) untuk minggu lalu/ini/depan "
-    "— pilih periode di sidebar — beserta jadwal review indeks MSCI. Kalender ekonomi bersumber dari "
+    "Jadwal rilis data ekonomi penting (CPI, NFP, suku bunga, GDP, PMI, dll) untuk minggu ini "
+    "(dan arsip minggu lalu) beserta jadwal review indeks MSCI. Kalender ekonomi bersumber dari "
     "feed publik ForexFactory.com; jadwal review indeks bersumber dari rilis resmi msci.com."
 )
 
@@ -52,36 +50,22 @@ st.markdown(
     html, body, .stApp, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    html {
+
+    /* Cegah scroll horizontal HALAMAN — cukup dikunci di html/body saja,
+       supaya tidak ikut mengganggu widget yang MEMANG perlu scroll
+       horizontal sendiri (tabel dataframe). */
+    html, body {
         overflow-x: hidden !important;
-        max-width: 100vw !important;
-        background-color: #0e1117 !important;
+        background-color: #0e1117;
         color-scheme: dark;
     }
-    body {
-        overflow-x: hidden !important;
-        background-color: #0e1117 !important;
-        overscroll-behavior-y: none;
-    }
-    .stApp,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"],
-    [data-testid="stMainBlockContainer"],
-    .main,
-    section.main {
-        overflow-x: hidden !important;
-        max-width: 100vw !important;
-        background-color: #0e1117 !important;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #131722 !important;
+    [data-testid="stHeader"], [data-testid="stToolbar"] {
+        background: transparent !important;
     }
     #MainMenu, footer, [data-testid="stDecoration"] { visibility: hidden; height: 0; }
     h1 { font-weight: 700; letter-spacing: -0.02em; }
     h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
     .stButton > button, .stDownloadButton > button {
-        background-color: rgba(255,255,255,0.04);
-        color: #e6e6e6;
         border-radius: 8px;
         border: 1px solid rgba(128,128,128,0.25);
         font-weight: 500;
@@ -90,79 +74,6 @@ st.markdown(
     .stButton > button:hover, .stDownloadButton > button:hover {
         border-color: #2962ff;
         color: #2962ff;
-    }
-    .stButton > button:disabled {
-        background-color: rgba(255,255,255,0.02);
-        color: rgba(255,255,255,0.35) !important;
-    }
-    [data-testid="stExpander"] {
-        background-color: rgba(255,255,255,0.02);
-        border: 1px solid rgba(128,128,128,0.15);
-        border-radius: 10px;
-    }
-    [data-testid="stExpander"] summary {
-        background-color: transparent !important;
-    }
-    .stTextInput input,
-    .stNumberInput input,
-    .stDateInput input,
-    .stSelectbox > div > div,
-    .stMultiSelect > div > div,
-    [data-baseweb="select"] > div,
-    [data-baseweb="input"] {
-        background-color: rgba(255,255,255,0.04) !important;
-        color: #e6e6e6 !important;
-        border-radius: 8px !important;
-        border-color: rgba(128,128,128,0.25) !important;
-    }
-    [data-baseweb="tag"] {
-        background-color: rgba(41,98,255,0.25) !important;
-    }
-    [data-baseweb="popover"],
-    [data-baseweb="menu"],
-    ul[role="listbox"],
-    li[role="option"] {
-        background-color: #131722 !important;
-        color: #e6e6e6 !important;
-    }
-    li[role="option"]:hover {
-        background-color: rgba(255,255,255,0.08) !important;
-    }
-    *, *::before, *::after {
-        box-sizing: border-box;
-    }
-    @media (max-width: 768px) {
-        [data-testid="stMainBlockContainer"], .main .block-container {
-            padding-left: 1rem !important;
-        }
-
-        [data-testid="stHorizontalBlock"] {
-            flex-wrap: nowrap !important;
-            overflow-x: auto !important;
-            -webkit-overflow-scrolling: touch;
-        }
-        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-            flex: 0 0 auto !important;
-            width: auto !important;
-            min-width: 200px;
-        }
-
-        [data-testid="stDataFrame"],
-        [data-testid="stImage"],
-        iframe,
-        .element-container {
-            max-width: 100% !important;
-        }
-
-        h1 { font-size: 1.6rem !important; }
-        h2 { font-size: 1.25rem !important; }
-
-        .sorotan-card { min-width: 240px; }
-    }
-    [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {
-        -webkit-overflow-scrolling: touch;
-        scroll-behavior: smooth;
     }
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
 
@@ -186,34 +97,35 @@ st.markdown(
     .bintang-isi { color: #f4b400; }
     .bintang-kosong { color: #3a3f4b; }
 
+    /* Baris event dipecah jadi 2 baris (judul di atas, angka & status di
+       bawah) supaya TIDAK PERNAH terpotong di layar sempit — tidak ada
+       lagi kolom berlebar-tetap yang bisa kepotong di tepi HP. */
     .event-row {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 4px;
+        padding: 10px 4px;
         border-bottom: 1px solid rgba(151, 166, 195, 0.14);
+    }
+    .event-row-utama {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex-wrap: wrap;
         font-size: 13.5px;
         color: #e6e6e6;
     }
-    .event-row .waktu { width: 64px; color: #8a8f99; flex-shrink: 0; }
-    .event-row .mata-uang { width: 46px; flex-shrink: 0; font-weight: 600; }
-    .event-row .judul-event { flex: 1; }
-
-    /* Di HP, kartu sorotan (3 kolom) dikecilkan lebarnya supaya waktu
-       discroll ke samping, kartu berikutnya "mengintip" di tepi layar
-       — bukan kepotong tanggung tanpa jejak kalau discroll. */
-    @media (max-width: 768px) {
-        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
-        [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-            min-width: 82vw;
-            scroll-snap-align: start;
-        }
-        [data-testid="stHorizontalBlock"] {
-            scroll-snap-type: x mandatory;
-            padding-right: 12px;
-        }
+    .event-row-utama .waktu { color: #8a8f99; min-width: 42px; flex-shrink: 0; }
+    .event-row-utama .mata-uang { font-weight: 600; flex-shrink: 0; }
+    .event-row-utama .judul-event { flex: 1 1 160px; min-width: 120px; }
+    .event-row-sub {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 14px;
+        font-size: 12px;
+        color: #a8adb8;
+        margin-top: 4px;
+        padding-left: 52px;
     }
-    .event-row .angka { width: 70px; text-align: right; color: #a8adb8; flex-shrink: 0; font-size: 12.5px; }
+    .status-sudah-rilis { color: #26a69a; font-weight: 500; }
+    .status-belum-rilis { color: #6f7893; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -221,11 +133,7 @@ st.markdown(
 
 WIB = ZoneInfo("Asia/Jakarta")
 
-PETA_URL_PERIODE = {
-    "Minggu Lalu": "https://nfs.faireconomy.media/ff_calendar_lastweek.json",
-    "Minggu Ini": "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-    "Minggu Depan": "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-}
+URL_THISWEEK = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 URL_MSCI_CSV = "https://app2.msci.com/eqb/pressreleases/archive/ir_dates.csv"
 
 BENDERA_MATA_UANG = {
@@ -290,8 +198,6 @@ def _simpan_cache_disk(nama_file: str, data: list, waktu_ambil: float):
 
 
 def _header_permintaan():
-    # Header yang lebih lengkap/mirip browser asli, supaya lebih kecil
-    # kemungkinan diblokir sebagai bot oleh server sumbernya.
     return {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -304,14 +210,49 @@ def _header_permintaan():
 
 
 # ============================================================
-# 3. Ambil data kalender ekonomi dari ForexFactory (feed publik)
+# 2c. Arsip mingguan self-building. ForexFactory TIDAK menyediakan feed
+#     publik untuk minggu lalu/depan (sempat dicoba, hasilnya 404 —
+#     endpoint itu memang tidak pernah ada). Solusinya: setiap kali app
+#     ini berhasil mengambil data "Minggu Ini" secara live, datanya
+#     disimpan sebagai arsip bertanggal. Lama-kelamaan, arsip "minggu
+#     lalu" akan otomatis terisi dari histori pemakaian aplikasi ini
+#     sendiri — bukan dari ForexFactory langsung (karena memang tidak ada).
+# ============================================================
+def _kunci_minggu(waktu: datetime) -> str:
+    tahun, minggu, _ = waktu.isocalendar()
+    return f"{tahun}-W{minggu:02d}"
+
+
+def _simpan_arsip_minggu_ini(data: list):
+    kunci = _kunci_minggu(datetime.now(WIB))
+    try:
+        with open(DIR_CACHE / f"arsip_{kunci}.json", "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _muat_arsip_minggu_lalu():
+    kunci_lalu = _kunci_minggu(datetime.now(WIB) - timedelta(weeks=1))
+    p = DIR_CACHE / f"arsip_{kunci_lalu}.json"
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+# ============================================================
+# 3. Ambil data kalender ekonomi "Minggu Ini" dari ForexFactory (feed publik)
 #    Catatan: ForexFactory membatasi permintaan file kalender mingguan
 #    (maks. sekitar 2x per 5 menit). Kalau kena 429 (rate limit) atau
 #    error jaringan lain, otomatis pakai cache disk terakhir yang masih
 #    ada, dengan catatan seberapa basi datanya.
 # ============================================================
-def ambil_kalender_ff(url: str, nama_periode: str, paksa_refresh: bool = False):
-    nama_file = f"ff_{nama_periode.replace(' ', '_').lower()}.json"
+def ambil_kalender_ff_minggu_ini(paksa_refresh: bool = False):
+    nama_file = "ff_minggu_ini.json"
     data_disk, waktu_disk = _muat_cache_disk(nama_file)
     umur_detik = (time.time() - waktu_disk) if waktu_disk else None
 
@@ -319,10 +260,10 @@ def ambil_kalender_ff(url: str, nama_periode: str, paksa_refresh: bool = False):
 
     if perlu_fetch:
         try:
-            resp = requests.get(url, timeout=15, headers=_header_permintaan())
+            resp = requests.get(URL_THISWEEK, timeout=15, headers=_header_permintaan())
             if resp.status_code == 429:
                 if data_disk is not None:
-                    return _bangun_df_ff(data_disk), None, waktu_disk, True  # pakai cache lama + tandai "basi karena rate limit"
+                    return _bangun_df_ff(data_disk), None, waktu_disk, True
                 retry_after = resp.headers.get("Retry-After", "beberapa menit")
                 return pd.DataFrame(), f"Dibatasi oleh ForexFactory (429). Coba lagi setelah {retry_after}.", None, False
             resp.raise_for_status()
@@ -332,6 +273,7 @@ def ambil_kalender_ff(url: str, nama_periode: str, paksa_refresh: bool = False):
                     return _bangun_df_ff(data_disk), None, waktu_disk, True
                 return pd.DataFrame(), None, None, False
             _simpan_cache_disk(nama_file, data, time.time())
+            _simpan_arsip_minggu_ini(data)  # ikut disimpan sebagai arsip untuk "Minggu Lalu" di kemudian hari
             return _bangun_df_ff(data), None, time.time(), False
         except Exception as e:
             if data_disk is not None:
@@ -427,12 +369,14 @@ st.sidebar.header("Filter Kalender Ekonomi")
 
 periode_dipilih = st.sidebar.selectbox(
     "Periode",
-    options=list(PETA_URL_PERIODE.keys()),
-    index=1,
+    options=["Minggu Ini", "Minggu Lalu (arsip)"],
+    index=0,
 )
 st.sidebar.caption(
-    "Feed publik ForexFactory hanya menyediakan 3 periode ini (minggu lalu/ini/depan) — "
-    "belum ada cakupan bulanan langsung dari sumber ini."
+    "ForexFactory hanya mempublikasikan feed publik untuk **minggu berjalan** — tidak ada endpoint "
+    "resmi untuk minggu depan (sudah dicek langsung, hasilnya selalu gagal/404). 'Minggu Lalu (arsip)' "
+    "di sini bukan dari ForexFactory langsung, tapi arsip otomatis: setiap kali 'Minggu Ini' berhasil "
+    "diambil, datanya disimpan. Jadi cakupannya akan makin lengkap seiring waktu pemakaian aplikasi ini."
 )
 
 # --- Cooldown tombol refresh: cegah spam request yang memicu rate limit ---
@@ -454,10 +398,22 @@ with col_refresh:
 
 paksa_refresh = tombol_refresh_diklik
 
-df_ff, error_ff, waktu_ambil_ff, ff_dari_cache_basi = ambil_kalender_ff(
-    PETA_URL_PERIODE[periode_dipilih], periode_dipilih, paksa_refresh
-)
 df_msci, error_msci, waktu_ambil_msci, msci_dari_cache_basi = ambil_jadwal_msci(paksa_refresh)
+
+if periode_dipilih == "Minggu Ini":
+    df_ff, error_ff, waktu_ambil_ff, ff_dari_cache_basi = ambil_kalender_ff_minggu_ini(paksa_refresh)
+    arsip_kosong = False
+else:
+    data_arsip = _muat_arsip_minggu_lalu()
+    error_ff = None
+    ff_dari_cache_basi = False
+    waktu_ambil_ff = None
+    if data_arsip is None:
+        df_ff = pd.DataFrame()
+        arsip_kosong = True
+    else:
+        df_ff = _bangun_df_ff(data_arsip)
+        arsip_kosong = False
 
 if error_ff:
     st.error(f"Gagal mengambil kalender ekonomi dari ForexFactory: {error_ff}")
@@ -466,6 +422,11 @@ elif ff_dari_cache_basi and waktu_ambil_ff:
     st.warning(
         f"ForexFactory sedang membatasi permintaan (rate limit) atau gagal diakses — "
         f"menampilkan data cache terakhir dari {menit_lalu} menit lalu."
+    )
+elif periode_dipilih == "Minggu Lalu (arsip)" and arsip_kosong:
+    st.info(
+        "Arsip untuk minggu lalu belum ada. Arsip terisi otomatis setiap kali 'Minggu Ini' berhasil "
+        "diambil — buka lagi halaman ini minggu depan supaya arsip minggu ini sudah tersimpan."
     )
 
 if error_msci:
@@ -629,14 +590,23 @@ if not df_tampil.empty:
 
 # ============================================================
 # 8. Tabel kalender — dikelompokkan per hari
+#    Catatan soal "actual": feed publik ForexFactory yang dipakai di sini
+#    HANYA berisi forecast & previous — tidak ada angka aktual pasca-rilis.
+#    Daripada mengarang angka, setiap event ditandai status rilisnya saja
+#    (sudah lewat waktunya vs belum) berdasarkan jam saat ini.
 # ============================================================
 st.subheader(f"Jadwal — {periode_dipilih}")
+st.caption(
+    "Catatan: feed ini hanya memuat Forecast & Previous — ForexFactory tidak menyertakan angka "
+    "Aktual pasca-rilis di feed publiknya. Status di bawah hanya menandai apakah waktu rilisnya "
+    "sudah lewat atau belum; untuk angka aktual, cek langsung di forexfactory.com/calendar."
+)
 
-if df_ff.empty:
+if df_ff.empty and not (periode_dipilih == "Minggu Lalu (arsip)" and arsip_kosong):
     st.info("Data kalender belum tersedia. Coba klik 'Refresh Data' di atas (kalau tidak sedang cooldown).")
-elif df_tampil.empty:
+elif df_tampil.empty and not df_ff.empty:
     st.info("Tidak ada event yang cocok dengan filter yang dipilih.")
-else:
+elif not df_tampil.empty:
     df_tampil = df_tampil.copy()
     df_tampil["_tanggal"] = df_tampil["Waktu"].dt.date
 
@@ -648,14 +618,25 @@ else:
                 bintang_html = render_bintang(ev["Dampak"])
                 forecast = ev["Forecast"] if ev["Forecast"] else "–"
                 previous = ev["Previous"] if ev["Previous"] else "–"
+                sudah_rilis = ev["Waktu"] < sekarang
+                status_html = (
+                    '<span class="status-sudah-rilis">✅ Sudah rilis</span>' if sudah_rilis
+                    else '<span class="status-belum-rilis">⏳ Menunggu rilis</span>'
+                )
                 st.markdown(
                     f"""
                     <div class="event-row">
-                        <div class="waktu">{ev['Waktu'].strftime('%H:%M')}</div>
-                        <div class="mata-uang">{bendera} {ev['MataUang']}</div>
-                        <div class="judul-event">{ev['Event']} {bintang_html}</div>
-                        <div class="angka">F: {forecast}</div>
-                        <div class="angka">P: {previous}</div>
+                        <div class="event-row-utama">
+                            <span class="waktu">{ev['Waktu'].strftime('%H:%M')}</span>
+                            <span class="mata-uang">{bendera} {ev['MataUang']}</span>
+                            <span class="judul-event">{ev['Event']}</span>
+                            {bintang_html}
+                        </div>
+                        <div class="event-row-sub">
+                            <span>Forecast: {forecast}</span>
+                            <span>Previous: {previous}</span>
+                            <span>{status_html}</span>
+                        </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -663,8 +644,7 @@ else:
 
     st.caption(
         "Waktu ditampilkan dalam WIB (Asia/Jakarta). Bintang menunjukkan level dampak "
-        "(★☆☆ rendah, ★★☆ sedang, ★★★ tinggi), persis seperti ikon dampak di ForexFactory. "
-        "F = Forecast (perkiraan konsensus), P = Previous (angka periode sebelumnya)."
+        "(★☆☆ rendah, ★★☆ sedang, ★★★ tinggi), persis seperti ikon dampak di ForexFactory."
     )
 
 st.markdown("---")
