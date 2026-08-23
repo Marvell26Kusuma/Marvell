@@ -1416,6 +1416,14 @@ with st.container(key="panel_asisten_ai"):
                 will-change: transform;
                 -webkit-overflow-scrolling: touch;
             }}
+            /* Di HP (layar sempit), panel jadi overlay penuh layar biar
+               tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
+            @media (max-width: 768px) {{
+                .st-key-panel_asisten_ai {{
+                    width: 100vw !important;
+                    border-left: none;
+                }}
+            }}
             .gemini-judul {{
                 font-size: 16px;
                 font-weight: 600;
@@ -1463,30 +1471,25 @@ with st.container(key="panel_asisten_ai"):
                 border-radius: 10px;
                 padding: 10px 14px;
             }}
+            /* Chat input dibuat "sticky" (nempel ke bawah AREA SCROLL panel
+               itu sendiri), BUKAN "fixed" ke seluruh viewport layar. Ini
+               penting di HP: position:fixed + bottom:16px kacau kalau
+               keyboard di HP kebuka (viewport-nya berubah dinamis), bikin
+               kotak input "melompat" ke tengah layar. Sticky relatif ke
+               parent yang overflow-y:auto (panel-nya sendiri) jauh lebih
+               stabil menghadapi resize akibat keyboard. */
             .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
-                position: fixed;
-                right: 16px;
-                bottom: 16px;
-                width: {LEBAR_PANEL_AI - 32}px;
+                position: sticky;
+                bottom: 0;
+                width: 100%;
+                margin-top: 12px;
                 background: rgba(18,22,31,0.97);
                 border: 1px solid rgba(255,255,255,0.12);
                 border-radius: 10px;
+                z-index: 5;
             }}
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
-            }}
-
-            /* Di HP (layar sempit), panel jadi overlay penuh layar biar
-               tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
-            @media (max-width: 768px) {{
-                .st-key-panel_asisten_ai {{
-                    width: 100vw !important;
-                    border-left: none;
-                }}
-                .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
-                    width: calc(100vw - 32px) !important;
-                    right: 16px !important;
-                }}
             }}
             </style>
             """,
