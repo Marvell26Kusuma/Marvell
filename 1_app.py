@@ -312,21 +312,21 @@ def tebak_simbol_tradingview(ticker: str, exchange_yf: str = None) -> str:
 #    tersimpan khusus halaman ini, biar nyambung terus antar sesi/reload
 #    tanpa kecampur sama daftar di halaman lain).
 # ============================================================
-if "daftar_saham" not in st.session_state:
-    st.session_state.daftar_saham = muat_daftar_tersimpan()
+if "daftar_saham_idx" not in st.session_state:
+    st.session_state.daftar_saham_idx = muat_daftar_tersimpan()
 
 
 def tambah_saham(kode: str):
     kode = kode.strip().upper()
-    if kode and kode not in st.session_state.daftar_saham:
-        st.session_state.daftar_saham.append(kode)
-        simpan_daftar_tersimpan(st.session_state.daftar_saham)
+    if kode and kode not in st.session_state.daftar_saham_idx:
+        st.session_state.daftar_saham_idx.append(kode)
+        simpan_daftar_tersimpan(st.session_state.daftar_saham_idx)
 
 
 def hapus_saham(kode: str):
-    if kode in st.session_state.daftar_saham:
-        st.session_state.daftar_saham.remove(kode)
-        simpan_daftar_tersimpan(st.session_state.daftar_saham)
+    if kode in st.session_state.daftar_saham_idx:
+        st.session_state.daftar_saham_idx.remove(kode)
+        simpan_daftar_tersimpan(st.session_state.daftar_saham_idx)
 
 
 # ============================================================
@@ -470,10 +470,10 @@ with st.sidebar.expander("Tambah Manual (ketik kode ticker)"):
 
 st.sidebar.markdown("### Saham yang Dibandingkan")
 st.sidebar.caption("Daftar ini otomatis tersimpan (khusus halaman ini) dan tetap ada walau app di-reload.")
-if not st.session_state.daftar_saham:
+if not st.session_state.daftar_saham_idx:
     st.sidebar.info("Belum ada saham. Tambahkan minimal 2 saham di atas.")
 else:
-    for kode in st.session_state.daftar_saham:
+    for kode in st.session_state.daftar_saham_idx:
         c1, c2 = st.sidebar.columns([4, 1])
         c1.write(f"• **{kode}**")
         if c2.button("×", key=f"hapus_{kode}"):
@@ -481,11 +481,11 @@ else:
             st.rerun()
 
     if st.sidebar.button("Clear All", key="btn_clear_all", use_container_width=True):
-        st.session_state.daftar_saham = []
+        st.session_state.daftar_saham_idx = []
         simpan_daftar_tersimpan([])
         st.rerun()
 
-daftar_saham = st.session_state.daftar_saham
+daftar_saham = st.session_state.daftar_saham_idx
 
 # ============================================================
 # 6b. Layout dua kolom: halaman utama (kiri) + panel Asisten AI (kanan, persisten)
@@ -847,16 +847,16 @@ with col_main:
     else:
         st.caption("Auto-refresh butuh: `pip install streamlit-autorefresh`")
 
-    if "tickers_chart_terpilih" not in st.session_state:
-        st.session_state.tickers_chart_terpilih = [list(data_semua.keys())[0]]
+    if "tickers_chart_terpilih_idx" not in st.session_state:
+        st.session_state.tickers_chart_terpilih_idx = [list(data_semua.keys())[0]]
 
-    opsi_chart = list(dict.fromkeys(list(data_semua.keys()) + st.session_state.tickers_chart_terpilih))
+    opsi_chart = list(dict.fromkeys(list(data_semua.keys()) + st.session_state.tickers_chart_terpilih_idx))
 
     tickers_dipilih = st.multiselect(
         "Pilih saham untuk chart (bisa lebih dari satu untuk bandingin split-screen)",
         options=opsi_chart,
         max_selections=4,
-        key="tickers_chart_terpilih",
+        key="tickers_chart_terpilih_idx",
     )
 
     col_refresh, _ = st.columns([1, 3])
@@ -1097,13 +1097,13 @@ def bangun_konteks_saham(data_semua: dict) -> str:
     return "\n".join(baris)
 
 
-if "riwayat_chat_saham" not in st.session_state:
+if "riwayat_chat_saham_idx" not in st.session_state:
     memori_awal = muat_memori_ai()
-    st.session_state.riwayat_chat_saham = memori_awal["riwayat"]
-    st.session_state.catatan_preferensi_ai = memori_awal["catatan_preferensi"]
+    st.session_state.riwayat_chat_saham_idx = memori_awal["riwayat"]
+    st.session_state.catatan_preferensi_ai_idx = memori_awal["catatan_preferensi"]
 
-if "catatan_preferensi_ai" not in st.session_state:
-    st.session_state.catatan_preferensi_ai = ""
+if "catatan_preferensi_ai_idx" not in st.session_state:
+    st.session_state.catatan_preferensi_ai_idx = ""
 
 SARAN_PROMPT_AI = [
     ("📊", "Bandingkan valuasi saham-saham ini"),
@@ -1122,7 +1122,7 @@ def _escape_dolar(teks: str) -> str:
 
 def _proses_prompt_ai(kotak_chat, prompt_teks: str):
     """Kirim satu prompt ke AI, tampilkan langsung di kotak chat, dan simpan ke riwayat (+ memori permanen)."""
-    st.session_state.riwayat_chat_saham.append({"role": "user", "content": prompt_teks})
+    st.session_state.riwayat_chat_saham_idx.append({"role": "user", "content": prompt_teks})
     with kotak_chat:
         with st.chat_message("user"):
             st.markdown(prompt_teks)
@@ -1130,21 +1130,21 @@ def _proses_prompt_ai(kotak_chat, prompt_teks: str):
             with st.spinner("Menganalisis..."):
                 konteks = bangun_konteks_saham(data_semua)
 
-                catatan = st.session_state.get("catatan_preferensi_ai", "").strip()
+                catatan = st.session_state.get("catatan_preferensi_ai_idx", "").strip()
                 blok_preferensi = f"\nCatatan preferensi pengguna (ikuti gaya ini):\n{catatan}\n" if catatan else ""
 
-                dok = st.session_state.get("dokumen_diupload_ai", "").strip()
+                dok = st.session_state.get("dokumen_diupload_ai_idx", "").strip()
                 blok_dokumen = f"\nData/dokumen tambahan yang diupload pengguna:\n{dok[:6000]}\n" if dok else ""
 
                 jawaban = tanya_ai(
                     SYSTEM_PROMPT_SAHAM.format(
                         konteks=konteks, blok_preferensi=blok_preferensi, blok_dokumen=blok_dokumen,
                     ),
-                    st.session_state.riwayat_chat_saham,
+                    st.session_state.riwayat_chat_saham_idx,
                 )
             st.markdown(_escape_dolar(jawaban))
-    st.session_state.riwayat_chat_saham.append({"role": "assistant", "content": jawaban})
-    simpan_memori_ai(st.session_state.riwayat_chat_saham, st.session_state.get("catatan_preferensi_ai", ""))
+    st.session_state.riwayat_chat_saham_idx.append({"role": "assistant", "content": jawaban})
+    simpan_memori_ai(st.session_state.riwayat_chat_saham_idx, st.session_state.get("catatan_preferensi_ai_idx", ""))
 
 
 with st.container(key="panel_asisten_ai"):
@@ -1284,9 +1284,9 @@ with st.container(key="panel_asisten_ai"):
             unsafe_allow_html=True,
         )
 
-        if st.session_state.riwayat_chat_saham and st.button("Bersihkan obrolan", key="btn_bersih_chat_saham", use_container_width=True):
-            st.session_state.riwayat_chat_saham = []
-            simpan_memori_ai([], st.session_state.get("catatan_preferensi_ai", ""))
+        if st.session_state.riwayat_chat_saham_idx and st.button("Bersihkan obrolan", key="btn_bersih_chat_saham_idx", use_container_width=True):
+            st.session_state.riwayat_chat_saham_idx = []
+            simpan_memori_ai([], st.session_state.get("catatan_preferensi_ai_idx", ""))
             st.rerun()
 
         with st.expander("Preferensi & Data Tambahan"):
@@ -1296,39 +1296,39 @@ with st.container(key="panel_asisten_ai"):
             )
             catatan_baru = st.text_area(
                 "Catatan preferensi",
-                value=st.session_state.get("catatan_preferensi_ai", ""),
-                key="input_catatan_preferensi",
+                value=st.session_state.get("catatan_preferensi_ai_idx", ""),
+                key="input_catatan_preferensi_idx",
                 height=100,
             )
             if st.button("Simpan preferensi", key="btn_simpan_preferensi", use_container_width=True):
-                st.session_state.catatan_preferensi_ai = catatan_baru
-                simpan_memori_ai(st.session_state.riwayat_chat_saham, catatan_baru)
+                st.session_state.catatan_preferensi_ai_idx = catatan_baru
+                simpan_memori_ai(st.session_state.riwayat_chat_saham_idx, catatan_baru)
                 st.success("Preferensi disimpan.")
 
             st.markdown("---")
             st.caption("Upload dokumen (txt/csv) buat jadi konteks tambahan AI selama sesi ini berlangsung (tidak disimpan permanen).")
-            file_upload = st.file_uploader("Upload file", type=["txt", "csv"], key="upload_dokumen_ai", label_visibility="collapsed")
+            file_upload = st.file_uploader("Upload file", type=["txt", "csv"], key="upload_dokumen_ai_idx", label_visibility="collapsed")
             if file_upload is not None:
                 try:
                     isi_file = file_upload.read().decode("utf-8", errors="ignore")
-                    st.session_state.dokumen_diupload_ai = isi_file
+                    st.session_state.dokumen_diupload_ai_idx = isi_file
                     st.caption(f"{len(isi_file):,} karakter dari '{file_upload.name}' siap dipakai sebagai konteks.")
                 except Exception:
                     st.caption("Gagal membaca file. Pastikan formatnya teks biasa (txt/csv).")
 
         kotak_chat = st.container()
         with kotak_chat:
-            if not st.session_state.riwayat_chat_saham:
+            if not st.session_state.riwayat_chat_saham_idx:
                 st.markdown(
                     '<div class="gemini-greeting">Halo! Ada yang bisa saya bantu?</div>',
                     unsafe_allow_html=True,
                 )
             else:
-                for pesan in st.session_state.riwayat_chat_saham:
+                for pesan in st.session_state.riwayat_chat_saham_idx:
                     with st.chat_message(pesan["role"]):
                         st.markdown(_escape_dolar(pesan["content"]))
 
-        if not st.session_state.riwayat_chat_saham:
+        if not st.session_state.riwayat_chat_saham_idx:
             st.markdown('<div class="gemini-chip-label">Coba tanyakan</div>', unsafe_allow_html=True)
             baris1 = st.columns(2)
             baris2 = st.columns(2)
@@ -1339,7 +1339,7 @@ with st.container(key="panel_asisten_ai"):
                         _proses_prompt_ai(kotak_chat, teks)
                         st.rerun()
 
-        prompt_saham = st.chat_input("Tanya soal saham ini...", key="chat_input_saham")
+        prompt_saham = st.chat_input("Tanya soal saham ini...", key="chat_input_saham_idx")
         if prompt_saham:
             _proses_prompt_ai(kotak_chat, prompt_saham)
             st.rerun()
