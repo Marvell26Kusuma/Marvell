@@ -2,5 +2,7 @@ streamlit
 yfinance
 pandas
 plotly
+requests
 google-generativeai
 streamlit-autorefresh
+curl_cffi
