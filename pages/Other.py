@@ -22,17 +22,27 @@ except ImportError:
 
 
 # ============================================================
-# 0. Konstanta & Helper Finnhub API
+# 0. Konstanta & Helper Finnhub API + Binance Public API
 # ============================================================
-# Kenapa Finnhub: satu API key aja (gak kayak Alpaca yang butuh key ID +
-# secret), free tier 60 request/menit, dan yang penting — Finnhub PUNYA
-# data fundamental dasar (PER, PBV, ROE, EPS, dividend, dst) lewat endpoint
-# /stock/metric, jadi rasio keuangan di app ini bisa keisi data beneran,
-# bukan cuma N/A placeholder kayak waktu masih pakai Alpaca. Cuma memang
-# ada beberapa rasio yang jarang lengkap di tier gratis (PEG Ratio,
-# EV/EBITDA, EV/Revenue, PER/EPS Forward) — itu tetap bisa tampil N/A
-# kalau datanya emang gak disediakan Finnhub buat simbol tersebut.
+# Kenapa Finnhub (buat saham): satu API key aja (gak kayak Alpaca yang
+# butuh key ID + secret), free tier 60 request/menit, dan yang penting —
+# Finnhub PUNYA data fundamental dasar (PER, PBV, ROE, EPS, dividend, dst)
+# lewat endpoint /stock/metric, jadi rasio keuangan di app ini bisa keisi
+# data beneran. Cuma memang ada beberapa rasio yang jarang lengkap di tier
+# gratis (PEG Ratio, EV/EBITDA, EV/Revenue, PER/EPS Forward) — itu tetap
+# bisa tampil N/A kalau datanya emang gak disediakan Finnhub buat simbol
+# tersebut.
+#
+# CATATAN PENTING soal crypto: endpoint candle/OHLC Finnhub (termasuk
+# /crypto/candle) sudah dikunci ke plan BERBAYAR sejak beberapa tahun
+# terakhir — di tier gratis baliknya error "You don't have access to this
+# resource". Karena Finnhub gak punya endpoint "quote" khusus buat crypto
+# (cuma ada candle), harga & 52W high/low crypto di app ini ditarik dari
+# **Binance Public API** (api.binance.com) — gratis, gak perlu API key
+# sama sekali, dan formatnya udah cocok sama simbol TradingView yang
+# dipakai (BINANCE:BTCUSDT).
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
+BINANCE_BASE_URL = "https://api.binance.com"
 
 
 def finnhub_token() -> str:
@@ -104,12 +114,13 @@ st.title("Pembanding Saham AS & Crypto (via Finnhub API)")
 st.caption("Bandingkan harga & rasio keuangan saham Amerika Serikat dan crypto sekaligus — data dari Finnhub, grafik dari TradingView Widget.")
 
 st.info(
-    "**Catatan:** hampir semua rasio di bawah (PER, PBV, ROE, dividend, dst) sekarang beneran "
-    "ditarik dari Finnhub (endpoint `/stock/metric`). Cuma beberapa rasio yang emang jarang "
-    "lengkap di tier gratis Finnhub (PEG Ratio, EV/EBITDA, EV/Revenue, PER/EPS Forward) bisa "
-    "tampil **N/A** kalau datanya gak tersedia buat simbol tersebut. Grafik pergerakan harga "
-    "tetap memakai **TradingView Widget** resmi (narik data sendiri dari TradingView, bisa saja "
-    "sedikit berbeda dengan harga quote dari Finnhub di atasnya).",
+    "**Catatan:** data saham (harga + rasio fundamental seperti PER, PBV, ROE, dividend, dst) "
+    "ditarik dari **Finnhub**. Beberapa rasio yang emang jarang lengkap di tier gratis Finnhub "
+    "(PEG Ratio, EV/EBITDA, EV/Revenue, PER/EPS Forward) bisa tampil **N/A**. Data harga & "
+    "52W high/low **crypto** ditarik dari **Binance Public API** (gratis, tanpa API key) — "
+    "soalnya endpoint candle/OHLC crypto di Finnhub sudah dikunci ke plan berbayar. Grafik "
+    "pergerakan harga tetap memakai **TradingView Widget** resmi (narik data sendiri dari "
+    "TradingView, bisa saja sedikit berbeda dengan harga quote di atasnya).",
     icon="ℹ️",
 )
 
@@ -285,7 +296,7 @@ st.markdown(
 # ============================================================
 # 2. Daftar Kategori Saham AS & Crypto (hardcoded — dipakai buat quick-pick
 #    di sidebar; pencarian tambahan di luar daftar ini dilakukan live via
-#    endpoint /search dan /crypto/symbol Finnhub).
+#    endpoint /search Finnhub buat saham, dan exchangeInfo Binance buat crypto).
 # ============================================================
 KATEGORI_SAHAM_AS = {
     "Teknologi": {
@@ -387,28 +398,49 @@ def cari_ticker_saham(kata_kunci: str):
     return hasil, None
 
 
+def _req_binance(path: str, params: dict = None, timeout: int = 15):
+    """Wrapper request ke Binance Public API — gak perlu API key sama
+    sekali buat data harga/market publik. Mengembalikan (json_data, error_msg)."""
+    url = f"{BINANCE_BASE_URL}{path}"
+    try:
+        resp = requests.get(url, params=params or {}, timeout=timeout)
+    except requests.exceptions.RequestException as e:
+        return None, f"Gagal konek ke Binance: {e}"
+    if resp.status_code == 429:
+        return None, "Rate limit Binance tercapai. Tunggu sebentar lalu coba lagi."
+    if resp.status_code != 200:
+        return None, f"Binance mengembalikan status {resp.status_code}."
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "Respons Binance tidak bisa dibaca (bukan JSON valid)."
+
+
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def ambil_semua_simbol_crypto(exchange: str = "BINANCE"):
-    data, err = _req_finnhub("/crypto/symbol", {"exchange": exchange})
-    if err:
+def ambil_semua_simbol_crypto():
+    data, err = _req_binance("/api/v3/exchangeInfo")
+    if err or not data:
         return [], err
-    # fokus ke pair USDT biar daftarnya gak kebanjiran
-    return [d for d in (data or []) if d.get("symbol", "").endswith("USDT")], None
+    hasil = [
+        s for s in data.get("symbols", [])
+        if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"
+    ]
+    return hasil, None
 
 
 def cari_ticker_crypto(kata_kunci: str):
     if not kata_kunci or len(kata_kunci.strip()) < 2:
         return [], None
-    semua, err = ambil_semua_simbol_crypto("BINANCE")
+    semua, err = ambil_semua_simbol_crypto()
     if err:
         return [], err
     kk = kata_kunci.strip().upper()
     hasil = []
-    for d in semua:
-        simbol = d.get("symbol", "")
-        deskripsi = d.get("description", "") or ""
-        if kk in simbol.upper() or kk in deskripsi.upper():
-            hasil.append((simbol, deskripsi))
+    for s in semua:
+        simbol = s.get("symbol", "")
+        aset_dasar = s.get("baseAsset", "")
+        if kk in simbol.upper() or kk in aset_dasar.upper():
+            hasil.append((f"BINANCE:{simbol}", aset_dasar))
         if len(hasil) >= 15:
             break
     return hasil, None
@@ -524,7 +556,7 @@ with st.sidebar.expander("Cari Crypto Lainnya"):
                 tambah_saham(pilihan_crypto.split("  —  ")[0])
                 st.rerun()
         else:
-            st.caption("Tidak ada hasil. Coba kata kunci lain (pencarian crypto dibatasi pasangan .../USDT di Binance).")
+            st.caption("Tidak ada hasil. Coba kata kunci lain (pencarian crypto dibatasi pasangan .../USDT di Binance, data publik gratis tanpa API key).")
 
 with st.sidebar.expander("Tambah Manual (ketik kode ticker)"):
     tipe_manual = st.radio("Tipe", ["Saham", "Crypto"], horizontal=True, key="tipe_manual")
@@ -707,22 +739,36 @@ with col_main:
 
 
     @st.cache_data(ttl=900, show_spinner=False)
-    def ambil_ringkasan_crypto(simbol: str):
-        """Ambil harga terkini, harga kemarin, dan 52W high/low crypto
-        sekaligus dari satu panggilan daily candle (~370 hari)."""
-        akhir = int(datetime.utcnow().timestamp())
-        mulai = int((datetime.utcnow() - timedelta(days=370)).timestamp())
-        data, err = _req_finnhub(
-            "/crypto/candle", {"symbol": simbol, "resolution": "D", "from": mulai, "to": akhir}
-        )
-        if err or not data or data.get("s") != "ok" or not data.get("c"):
+    def ambil_ringkasan_crypto(kode: str):
+        """Ambil harga terkini + perubahan 24 jam dari Binance ticker/24hr,
+        dan 52W high/low dari Binance klines harian (~370 hari). kode
+        formatnya 'BINANCE:BTCUSDT' — prefix exchange dibuang dulu sebelum
+        dipakai manggil Binance (Binance gak butuh prefix itu)."""
+        pasangan = kode.split(":")[-1]
+
+        ticker, err1 = _req_binance("/api/v3/ticker/24hr", {"symbol": pasangan})
+        if err1 or not ticker:
             return None
-        closes, highs, lows = data["c"], data["h"], data["l"]
+
+        klines, err2 = _req_binance(
+            "/api/v3/klines", {"symbol": pasangan, "interval": "1d", "limit": 370}
+        )
+
+        harga = float(ticker.get("lastPrice", 0)) or None
+        harga_kemarin = float(ticker.get("prevClosePrice", 0)) or None
+        if not harga:
+            return None
+
+        tinggi_52w = rendah_52w = None
+        if not err2 and klines:
+            tinggi_52w = max(float(k[2]) for k in klines)
+            rendah_52w = min(float(k[3]) for k in klines)
+
         return {
-            "harga": closes[-1],
-            "harga_kemarin": closes[-2] if len(closes) > 1 else None,
-            "tinggi_52w": max(highs),
-            "rendah_52w": min(lows),
+            "harga": harga,
+            "harga_kemarin": harga_kemarin,
+            "tinggi_52w": tinggi_52w,
+            "rendah_52w": rendah_52w,
         }
 
 
@@ -748,8 +794,8 @@ with col_main:
                     "Revenue Growth (%)": None, "Earnings Growth (%)": None,
                     "Dividend Yield (%)": None, "Payout Ratio (%)": None,
                     "Beta": None,
-                    "52W High": fmt(ring["tinggi_52w"], 4 if ring["tinggi_52w"] < 1 else 2),
-                    "52W Low": fmt(ring["rendah_52w"], 4 if ring["rendah_52w"] < 1 else 2),
+                    "52W High": fmt(ring["tinggi_52w"], 4 if (ring["tinggi_52w"] or 0) < 1 else 2),
+                    "52W Low": fmt(ring["rendah_52w"], 4 if (ring["rendah_52w"] or 0) < 1 else 2),
                 }
                 time.sleep(0.1)
                 continue
@@ -1259,7 +1305,7 @@ def simpan_memori_ai(riwayat: list, catatan_preferensi: str):
 
 SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham AS & crypto di dalam sebuah aplikasi pembanding. Tugasmu membantu pengguna memahami data rasio keuangan dan harga yang sedang mereka bandingkan.
 
-Data saham/crypto yang sedang dibandingkan pengguna saat ini (sumber data: Finnhub API):
+Data saham/crypto yang sedang dibandingkan pengguna saat ini (sumber data: Finnhub API untuk saham, Binance Public API untuk crypto):
 {konteks}
 {blok_preferensi}
 {blok_dokumen}
