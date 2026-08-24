@@ -725,12 +725,14 @@ with col_main:
     @st.cache_data(ttl=900, show_spinner=False)
     def ambil_quote_saham(simbol: str):
         data, err = _req_finnhub("/quote", {"symbol": simbol})
-        if err or not data:
-            return None
+        if err:
+            return None, err
+        if not data:
+            return None, "respons /quote kosong dari Finnhub"
         harga = data.get("c")
         if not harga:
-            return None
-        return {"harga": harga, "harga_kemarin": data.get("pc")}
+            return None, f"harga (field 'c') kosong/nol pada respons — respons mentah: {data}"
+        return {"harga": harga, "harga_kemarin": data.get("pc")}, None
 
 
     @st.cache_data(ttl=6 * 3600, show_spinner=False)
@@ -833,9 +835,9 @@ with col_main:
                 time.sleep(0.1)
                 continue
 
-            quote = ambil_quote_saham(kode)
+            quote, err_quote = ambil_quote_saham(kode)
             if not quote:
-                error_detail[kode] = "quote Finnhub kosong/gagal (cek API key atau kode ticker)"
+                error_detail[kode] = f"/quote: {err_quote}"
                 continue
             profil = ambil_profile_saham(kode) or {}
             metric = ambil_metric_saham(kode)
