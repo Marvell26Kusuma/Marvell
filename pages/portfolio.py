@@ -801,6 +801,28 @@ with st.container(key="panel_asisten_ai"):
                 color: #eef0fb !important;
             }}
 
+            /* Tombol close "X" — bulat kecil, nempel di pojok kanan atas panel. */
+            .st-key-panel_asisten_ai .st-key-btn_tutup_panel_ai_pf button {{
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.14);
+                border-radius: 50%;
+                width: 32px;
+                height: 32px;
+                padding: 0;
+                min-height: 32px;
+                line-height: 1;
+                font-size: 15px;
+                color: #d7dcf5;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+            .st-key-panel_asisten_ai .st-key-btn_tutup_panel_ai_pf button:hover {{
+                background: rgba(239,83,80,0.18);
+                border-color: #ef5350;
+                color: #ffffff;
+            }}
+
             /* Di HP (layar sempit), panel jadi overlay penuh layar biar
                tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
             @media (max-width: 768px) {{
@@ -814,9 +836,18 @@ with st.container(key="panel_asisten_ai"):
             unsafe_allow_html=True,
         )
 
+        col_judul_ai_pf, col_tutup_ai_pf = st.columns([6, 1])
+        with col_judul_ai_pf:
+            st.markdown('<div class="gemini-judul">Asisten AI</div>', unsafe_allow_html=True)
+        with col_tutup_ai_pf:
+            with st.container(key="btn_tutup_panel_ai_pf"):
+                if st.button("✕", key="tombol_tutup_panel_ai_pf", help="Tutup panel Asisten AI"):
+                    st.session_state["toggle_panel_ai_pf"] = False
+                    st.session_state["tampilkan_panel_ai"] = False
+                    st.rerun()
+
         st.markdown(
             """
-            <div class="gemini-judul">Asisten AI</div>
             <div class="gemini-caption">
                 Tanya soal komposisi, diversifikasi, atau performa portofolio kamu. Ini bukan nasihat
                 keuangan resmi; AI dapat membuat kesalahan — selalu riset sendiri sebelum mengambil

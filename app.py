@@ -9,6 +9,12 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_TERSEDIA = True
+except ImportError:
+    CURL_CFFI_TERSEDIA = False
+
+try:
     import google.generativeai as genai
     GEMINI_TERSEDIA = True
 except ImportError:
@@ -19,6 +25,21 @@ try:
     AUTOREFRESH_TERSEDIA = True
 except ImportError:
     AUTOREFRESH_TERSEDIA = False
+
+
+@st.cache_resource(show_spinner=False)
+def dapatkan_sesi_yf():
+    """Session yang 'menyamar' sebagai browser Chrome asli — Yahoo Finance
+    sering memblokir/mengembalikan data kosong untuk request polos dari
+    server cloud (mis. Streamlit Cloud), session ini mengurangi
+    kemungkinan itu terjadi. Dipakai di semua pemanggilan yfinance."""
+    if not CURL_CFFI_TERSEDIA:
+        return None
+    try:
+        return curl_requests.Session(impersonate="chrome")
+    except Exception:
+        return None
+
 
 # ============================================================
 # 1. Konfigurasi Tampilan Halaman
@@ -286,7 +307,7 @@ def cari_ticker_global(kata_kunci: str):
     if not kata_kunci or len(kata_kunci.strip()) < 2:
         return []
     try:
-        hasil = yf.Search(kata_kunci, max_results=10)
+        hasil = yf.Search(kata_kunci, max_results=10, session=dapatkan_sesi_yf())
         opsi = []
         for q in hasil.quotes:
             simbol = q.get("symbol", "")
@@ -552,7 +573,7 @@ with col_main:
     @st.cache_data(ttl=900, show_spinner=False)
     def ambil_rasio_saham(ticker: str):
         try:
-            emiten = yf.Ticker(ticker)
+            emiten = yf.Ticker(ticker, session=dapatkan_sesi_yf())
             info = emiten.info
             if not info:
                 return None
@@ -613,7 +634,7 @@ with col_main:
     @st.cache_data(ttl=600, show_spinner=False)
     def ambil_data_harga(ticker: str, periode: str, interval: str, resample):
         try:
-            data = yf.Ticker(ticker).history(period=periode, interval=interval)
+            data = yf.Ticker(ticker, session=dapatkan_sesi_yf()).history(period=periode, interval=interval)
             if data is None or data.empty:
                 return None
             data = data[["Open", "High", "Low", "Close", "Volume"]].dropna()
@@ -887,6 +908,14 @@ with col_main:
 
     if gagal:
         st.error(f"Gagal mengambil data untuk: {', '.join(gagal)}. Periksa kembali kode tickernya.")
+        if not CURL_CFFI_TERSEDIA:
+            st.caption(
+                "Catatan: package `curl_cffi` belum terpasang di server ini, jadi request ke Yahoo Finance "
+                "lebih mudah diblokir. Install dengan `pip install curl_cffi` lalu restart aplikasinya."
+            )
+        if st.button("Coba lagi", key="btn_coba_lagi_gagal"):
+            ambil_rasio_saham.clear()
+            st.rerun()
 
     if len(data_semua) < 1:
         st.stop()
@@ -1491,14 +1520,45 @@ with st.container(key="panel_asisten_ai"):
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
             }}
+
+            /* Tombol close "X" — bulat kecil, nempel di pojok kanan atas panel. */
+            .st-key-panel_asisten_ai .st-key-btn_tutup_panel_ai button {{
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.14);
+                border-radius: 50%;
+                width: 32px;
+                height: 32px;
+                padding: 0;
+                min-height: 32px;
+                line-height: 1;
+                font-size: 15px;
+                color: #d7dcf5;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+            .st-key-panel_asisten_ai .st-key-btn_tutup_panel_ai button:hover {{
+                background: rgba(239,83,80,0.18);
+                border-color: #ef5350;
+                color: #ffffff;
+            }}
             </style>
             """,
             unsafe_allow_html=True,
         )
 
+        col_judul_ai, col_tutup_ai = st.columns([6, 1])
+        with col_judul_ai:
+            st.markdown('<div class="gemini-judul">Asisten AI</div>', unsafe_allow_html=True)
+        with col_tutup_ai:
+            with st.container(key="btn_tutup_panel_ai"):
+                if st.button("✕", key="tombol_tutup_panel_ai", help="Tutup panel Asisten AI"):
+                    st.session_state["toggle_panel_ai"] = False
+                    st.session_state["tampilkan_panel_ai"] = False
+                    st.rerun()
+
         st.markdown(
             """
-            <div class="gemini-judul">Asisten AI</div>
             <div class="gemini-caption">
                 Tanya soal saham yang sedang dibandingkan. Ini bukan nasihat keuangan resmi;
                 AI dapat membuat kesalahan — selalu riset sendiri sebelum mengambil keputusan investasi.
