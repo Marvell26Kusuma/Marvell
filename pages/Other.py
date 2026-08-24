@@ -22,78 +22,61 @@ except ImportError:
 
 
 # ============================================================
-# 0. Konstanta & Helper Alpaca Market Data API
+# 0. Konstanta & Helper Finnhub API
 # ============================================================
-# CATATAN PENTING soal Alpaca:
-# Alpaca Market Data API cuma nyediain data HARGA (bars, quotes, trades,
-# snapshot) — dia TIDAK punya data fundamental/laporan keuangan (PER, PBV,
-# ROE, DER, EPS, dividend, revenue growth, market cap, dsb). Jadi semua
-# rasio fundamental di app ini tampil "N/A" sebagai placeholder buat nanti
-# (misalnya kalau suatu saat mau disambungin ke sumber data fundamental
-# terpisah). Yang beneran ditarik dari Alpaca cuma: harga terkini, harga
-# penutupan sebelumnya, dan 52-week high/low (semuanya data harga murni).
-#
-# Base URL Data API: https://data.alpaca.markets
-# Base URL Trading API (buat cari daftar ticker/asset): tergantung tipe
-# akun (paper/live) — dipilih di sidebar.
-DATA_BASE_URL = "https://data.alpaca.markets"
-TRADING_BASE_URL_PAPER = "https://paper-api.alpaca.markets"
-TRADING_BASE_URL_LIVE = "https://api.alpaca.markets"
+# Kenapa Finnhub: satu API key aja (gak kayak Alpaca yang butuh key ID +
+# secret), free tier 60 request/menit, dan yang penting — Finnhub PUNYA
+# data fundamental dasar (PER, PBV, ROE, EPS, dividend, dst) lewat endpoint
+# /stock/metric, jadi rasio keuangan di app ini bisa keisi data beneran,
+# bukan cuma N/A placeholder kayak waktu masih pakai Alpaca. Cuma memang
+# ada beberapa rasio yang jarang lengkap di tier gratis (PEG Ratio,
+# EV/EBITDA, EV/Revenue, PER/EPS Forward) — itu tetap bisa tampil N/A
+# kalau datanya emang gak disediakan Finnhub buat simbol tersebut.
+FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
 
-def alpaca_headers() -> dict:
-    key_id = st.session_state.get("alpaca_key_id", "").strip()
-    secret_key = st.session_state.get("alpaca_secret_key", "").strip()
-    if not key_id or not secret_key:
-        return {}
-    return {"APCA-API-KEY-ID": key_id, "APCA-API-SECRET-KEY": secret_key}
+def finnhub_token() -> str:
+    return st.session_state.get("finnhub_api_key", "").strip()
 
 
-def trading_base_url() -> str:
-    tipe = st.session_state.get("tipe_akun_alpaca", "Paper (simulasi)")
-    return TRADING_BASE_URL_LIVE if tipe == "Live (akun asli)" else TRADING_BASE_URL_PAPER
+def _req_finnhub(path: str, params: dict = None, timeout: int = 15):
+    """Wrapper request ke Finnhub API. Mengembalikan (json_data, error_msg).
+    error_msg None kalau sukses. Menangani kasus umum: key kosong, 401/403
+    (key salah/endpoint butuh plan lebih tinggi), 429 (rate limit tier
+    gratis: 60 request/menit)."""
+    token = finnhub_token()
+    if not token:
+        return None, "API Key Finnhub belum diisi."
 
+    params = dict(params or {})
+    params["token"] = token
+    url = f"{FINNHUB_BASE_URL}{path}"
 
-def _req_alpaca(base_url: str, path: str, params: dict = None, timeout: int = 15):
-    """Wrapper request ke Alpaca (Data API atau Trading API tergantung base_url).
-    Mengembalikan (json_data, error_msg). error_msg None kalau sukses.
-    Menangani kasus umum: key kosong, 401/403 (key salah/plan gak cukup),
-    429 (rate limit)."""
-    headers = alpaca_headers()
-    if not headers:
-        return None, "API Key ID / Secret Key Alpaca belum diisi."
-
-    url = f"{base_url}{path}"
     try:
-        resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
+        resp = requests.get(url, params=params, timeout=timeout)
     except requests.exceptions.RequestException as e:
-        return None, f"Gagal konek ke Alpaca: {e}"
+        return None, f"Gagal konek ke Finnhub: {e}"
 
     if resp.status_code == 429:
-        return None, "Rate limit Alpaca tercapai. Tunggu sebentar lalu coba lagi."
+        return None, "Rate limit Finnhub tercapai (tier gratis = 60 request/menit). Tunggu sebentar lalu coba lagi."
     if resp.status_code in (401, 403):
-        return None, "API Key Alpaca ditolak, atau data ini butuh subscription/plan yang lebih tinggi."
+        return None, "API Key Finnhub ditolak, atau endpoint ini butuh plan berbayar yang lebih tinggi."
     if resp.status_code == 404:
-        return None, "Data tidak ditemukan (simbol mungkin salah/tidak terdaftar di Alpaca)."
+        return None, "Data tidak ditemukan (simbol mungkin salah/tidak terdaftar di Finnhub)."
     if resp.status_code != 200:
-        return None, f"Alpaca mengembalikan status {resp.status_code}."
+        return None, f"Finnhub mengembalikan status {resp.status_code}."
 
     try:
         return resp.json(), None
     except Exception:
-        return None, "Respons Alpaca tidak bisa dibaca (bukan JSON valid)."
-
-
-def _req_alpaca_data(path: str, params: dict = None, timeout: int = 15):
-    return _req_alpaca(DATA_BASE_URL, path, params, timeout)
-
-
-def _req_alpaca_trading(path: str, params: dict = None, timeout: int = 15):
-    return _req_alpaca(trading_base_url(), path, params, timeout)
+        return None, "Respons Finnhub tidak bisa dibaca (bukan JSON valid)."
 
 
 def is_crypto(kode: str) -> bool:
-    return "/" in kode
+    # Simbol crypto Finnhub selalu berformat "EXCHANGE:PAIR", mis. BINANCE:BTCUSDT.
+    # Simbol saham AS di Finnhub gak pernah pakai titik dua, jadi ini aman dipakai
+    # sebagai penanda.
+    return ":" in kode
 
 
 def label_tampil_ticker(kode: str) -> str:
@@ -102,65 +85,53 @@ def label_tampil_ticker(kode: str) -> str:
     return kode.upper()
 
 
-def normalisasi_kode_crypto(kode: str) -> str:
-    """Alpaca pakai format 'BTC/USD' (pakai slash) buat pasangan crypto.
-    Ubah input user semacam 'BTC' / 'btc-usd' / 'BTCUSD' jadi 'BTC/USD'."""
-    k = kode.strip().upper().replace("-", "").replace(" ", "")
-    if "/" in k:
+def normalisasi_kode_crypto(kode: str, exchange: str = "BINANCE") -> str:
+    """Ubah input user semacam 'BTC' / 'btc-usdt' / 'BTCUSDT' jadi format
+    Finnhub 'BINANCE:BTCUSDT'."""
+    k = kode.strip().upper().replace("-", "").replace(" ", "").replace("/", "")
+    if ":" in k:
         return k
-    if k.endswith("USD"):
-        k = k[:-3]
-    return f"{k}/USD"
+    if not k.endswith("USDT") and not k.endswith("USD"):
+        k = f"{k}USDT"
+    return f"{exchange}:{k}"
 
 
 # ============================================================
 # 1. Konfigurasi Tampilan Halaman
 # ============================================================
 st.set_page_config(page_title="Pembanding Saham & Crypto", layout="wide", page_icon="chart_with_upwards_trend")
-st.title("Pembanding Saham AS & Crypto (via Alpaca Market Data API)")
-st.caption("Bandingkan harga saham Amerika Serikat dan crypto sekaligus — data harga dari Alpaca, grafik dari TradingView Widget.")
+st.title("Pembanding Saham AS & Crypto (via Finnhub API)")
+st.caption("Bandingkan harga & rasio keuangan saham Amerika Serikat dan crypto sekaligus — data dari Finnhub, grafik dari TradingView Widget.")
 
 st.info(
-    "**Catatan:** Alpaca Market Data API cuma nyediain data harga, bukan data fundamental. "
-    "Kolom rasio keuangan (PER, PBV, ROE, dividend, dst) di bawah sengaja tampil **N/A** sebagai "
-    "placeholder — belum ada sumber datanya di versi ini. Grafik pergerakan harga memakai "
-    "**TradingView Widget** resmi (narik data sendiri dari TradingView, jadi bisa saja sedikit "
-    "berbeda dengan harga snapshot dari Alpaca di atasnya).",
+    "**Catatan:** hampir semua rasio di bawah (PER, PBV, ROE, dividend, dst) sekarang beneran "
+    "ditarik dari Finnhub (endpoint `/stock/metric`). Cuma beberapa rasio yang emang jarang "
+    "lengkap di tier gratis Finnhub (PEG Ratio, EV/EBITDA, EV/Revenue, PER/EPS Forward) bisa "
+    "tampil **N/A** kalau datanya gak tersedia buat simbol tersebut. Grafik pergerakan harga "
+    "tetap memakai **TradingView Widget** resmi (narik data sendiri dari TradingView, bisa saja "
+    "sedikit berbeda dengan harga quote dari Finnhub di atasnya).",
     icon="ℹ️",
 )
 
 # ============================================================
-# 1a. API Key Alpaca
+# 1a. API Key Finnhub
 # ============================================================
-with st.sidebar.expander("Koneksi Alpaca", expanded="alpaca_key_id" not in st.session_state or not st.session_state.get("alpaca_key_id")):
+with st.sidebar.expander("Koneksi Finnhub", expanded="finnhub_api_key" not in st.session_state or not st.session_state.get("finnhub_api_key")):
     st.caption(
-        "Masukkan API Key ID & Secret Key Alpaca kamu (akun paper trading gratis juga bisa dipakai "
-        "buat akses Market Data API). Key ini hanya disimpan selama sesi berjalan (tidak ditulis ke file)."
+        "Masukkan API key Finnhub kamu (ada tier gratis, 60 request/menit). API key ini hanya "
+        "disimpan selama sesi berjalan (tidak ditulis ke file)."
     )
-    st.session_state["alpaca_key_id"] = st.text_input(
-        "APCA-API-KEY-ID",
+    st.session_state["finnhub_api_key"] = st.text_input(
+        "API Key Finnhub",
         type="password",
-        value=st.session_state.get("alpaca_key_id", ""),
-        placeholder="isi API Key ID kamu di sini",
-        key="input_alpaca_key_id",
+        value=st.session_state.get("finnhub_api_key", ""),
+        placeholder="isi API key kamu di sini",
+        key="input_finnhub_api_key",
     )
-    st.session_state["alpaca_secret_key"] = st.text_input(
-        "APCA-API-SECRET-KEY",
-        type="password",
-        value=st.session_state.get("alpaca_secret_key", ""),
-        placeholder="isi API Secret Key kamu di sini",
-        key="input_alpaca_secret_key",
-    )
-    st.session_state["tipe_akun_alpaca"] = st.radio(
-        "Tipe akun (buat pencarian daftar ticker via Trading API)",
-        ["Paper (simulasi)", "Live (akun asli)"],
-        horizontal=True,
-        key="input_tipe_akun_alpaca",
-    )
-    st.caption("Daftar API key gratis di app.alpaca.markets (pilih akun Paper Trading kalau belum mau pakai akun live).")
+    st.caption("Daftar API key gratis di finnhub.io/register")
 
-if not alpaca_headers():
-    st.warning("Isi dulu API Key ID & Secret Key Alpaca di sidebar (bagian 'Koneksi Alpaca') untuk mulai memakai aplikasi ini.")
+if not finnhub_token():
+    st.warning("Isi dulu API Key Finnhub di sidebar (bagian 'Koneksi Finnhub') untuk mulai memakai aplikasi ini.")
     st.stop()
 
 
@@ -314,7 +285,7 @@ st.markdown(
 # ============================================================
 # 2. Daftar Kategori Saham AS & Crypto (hardcoded — dipakai buat quick-pick
 #    di sidebar; pencarian tambahan di luar daftar ini dilakukan live via
-#    endpoint /v2/assets Alpaca Trading API).
+#    endpoint /search dan /crypto/symbol Finnhub).
 # ============================================================
 KATEGORI_SAHAM_AS = {
     "Teknologi": {
@@ -357,20 +328,24 @@ KATEGORI_CRYPTO = {normalisasi_kode_crypto(k): v for k, v in KATEGORI_CRYPTO_RAW
 KATEGORI_SAHAM = dict(KATEGORI_SAHAM_AS)
 KATEGORI_SAHAM["Crypto"] = KATEGORI_CRYPTO
 
-# Alias exchange Alpaca -> kode exchange yang dikenali TradingView.
-ALIAS_EXCHANGE_TV = {
-    "NASDAQ": "NASDAQ", "NYSE": "NYSE", "NYSEARCA": "AMEX", "ARCA": "AMEX",
-    "AMEX": "AMEX", "BATS": "BATS", "OTC": "OTC",
-}
 
-
-def tebak_simbol_tradingview(kode: str, exchange_alpaca: str = None) -> str:
-    """Tebakan default simbol TradingView. Bukan jaminan selalu tepat —
-    makanya di panel chart selalu disediakan kotak buat override manual."""
+def tebak_simbol_tradingview(kode: str, exchange_finnhub: str = None) -> str:
+    """Tebakan default simbol TradingView. Untuk crypto formatnya nyaris
+    identik sama simbol Finnhub (mis. BINANCE:BTCUSDT), jadi tinggal dipakai
+    lagi. Untuk saham, exchange dari profil Finnhub ditebak ke kode exchange
+    TradingView — bukan jaminan selalu tepat, makanya selalu disediakan
+    kotak override manual di panel chart."""
     if is_crypto(kode):
-        inti = kode.replace("/", "")
-        return f"COINBASE:{inti}"
-    exch_tv = ALIAS_EXCHANGE_TV.get((exchange_alpaca or "").upper(), "NASDAQ")
+        return kode
+    ex = (exchange_finnhub or "").upper()
+    if "NASDAQ" in ex:
+        exch_tv = "NASDAQ"
+    elif "NEW YORK" in ex or "NYSE" in ex:
+        exch_tv = "NYSE"
+    elif "AMEX" in ex or "AMERICAN" in ex:
+        exch_tv = "AMEX"
+    else:
+        exch_tv = "NASDAQ"
     return f"{exch_tv}:{kode.upper()}"
 
 
@@ -393,37 +368,47 @@ def hapus_saham(kode: str):
 
 
 # ============================================================
-# 4. Pencarian Ticker via Alpaca Trading API (/v2/assets)
-#    Endpoint ini gak punya parameter "search" — jadi kita ambil daftar
-#    lengkapnya sekali (di-cache lumayan lama), lalu difilter di sisi
-#    Python berdasarkan kata kunci.
+# 4. Pencarian Ticker via Finnhub
 # ============================================================
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
-def ambil_semua_aset(asset_class: str):
-    """asset_class: 'us_equity' atau 'crypto'."""
-    data, err = _req_alpaca_trading(
-        "/v2/assets", {"status": "active", "asset_class": asset_class}
-    )
-    if err:
-        return [], err
-    return data or [], None
-
-
-def cari_ticker_alpaca(kata_kunci: str, asset_class: str):
+@st.cache_data(ttl=1800, show_spinner=False)
+def cari_ticker_saham(kata_kunci: str):
     if not kata_kunci or len(kata_kunci.strip()) < 2:
         return [], None
-    semua, err = ambil_semua_aset(asset_class)
+    data, err = _req_finnhub("/search", {"q": kata_kunci.strip()})
+    if err:
+        return [], err
+    hasil = []
+    for r in (data.get("result") or [])[:15]:
+        simbol = r.get("symbol", "")
+        deskripsi = r.get("description", "") or ""
+        tipe = r.get("type", "")
+        if simbol:
+            hasil.append((simbol, deskripsi, tipe))
+    return hasil, None
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def ambil_semua_simbol_crypto(exchange: str = "BINANCE"):
+    data, err = _req_finnhub("/crypto/symbol", {"exchange": exchange})
+    if err:
+        return [], err
+    # fokus ke pair USDT biar daftarnya gak kebanjiran
+    return [d for d in (data or []) if d.get("symbol", "").endswith("USDT")], None
+
+
+def cari_ticker_crypto(kata_kunci: str):
+    if not kata_kunci or len(kata_kunci.strip()) < 2:
+        return [], None
+    semua, err = ambil_semua_simbol_crypto("BINANCE")
     if err:
         return [], err
     kk = kata_kunci.strip().upper()
     hasil = []
-    for a in semua:
-        simbol = a.get("symbol", "")
-        nama = a.get("name", "") or ""
-        if not a.get("tradable", True):
-            continue
-        if kk in simbol.upper() or kk in nama.upper():
-            hasil.append((simbol, nama, a.get("exchange", "")))
+    for d in semua:
+        simbol = d.get("symbol", "")
+        deskripsi = d.get("description", "") or ""
+        if kk in simbol.upper() or kk in deskripsi.upper():
+            hasil.append((simbol, deskripsi))
         if len(hasil) >= 15:
             break
     return hasil, None
@@ -512,34 +497,34 @@ with st.sidebar.expander("Pilih dari Kategori", expanded=True):
         st.rerun()
 
 with st.sidebar.expander("Cari Saham AS Lainnya"):
-    kueri_saham = st.text_input("Nama perusahaan / kode ticker", placeholder="contoh: netflix / NFLX", key="kueri_saham_alpaca")
+    kueri_saham = st.text_input("Nama perusahaan / kode ticker", placeholder="contoh: netflix / NFLX", key="kueri_saham_finnhub")
     if kueri_saham:
-        hasil_saham, err_saham = cari_ticker_alpaca(kueri_saham, "us_equity")
+        hasil_saham, err_saham = cari_ticker_saham(kueri_saham)
         if err_saham:
             st.caption(f"Gagal mencari: {err_saham}")
         elif hasil_saham:
-            label_hasil = [f"{s}  —  {n} ({b})" for s, n, b in hasil_saham]
-            pilihan_saham = st.selectbox("Hasil pencarian", label_hasil, key="pilihan_saham_alpaca")
-            if st.button("Tambahkan hasil pencarian", key="btn_tambah_saham_alpaca"):
+            label_hasil = [f"{s}  —  {n} ({t})" for s, n, t in hasil_saham]
+            pilihan_saham = st.selectbox("Hasil pencarian", label_hasil, key="pilihan_saham_finnhub")
+            if st.button("Tambahkan hasil pencarian", key="btn_tambah_saham_finnhub"):
                 tambah_saham(pilihan_saham.split("  —  ")[0])
                 st.rerun()
         else:
             st.caption("Tidak ada hasil. Coba kata kunci lain.")
 
 with st.sidebar.expander("Cari Crypto Lainnya"):
-    kueri_crypto = st.text_input("Nama / kode coin", placeholder="contoh: shiba inu / SHIB", key="kueri_crypto_alpaca")
+    kueri_crypto = st.text_input("Nama / kode coin", placeholder="contoh: shiba inu / SHIB", key="kueri_crypto_finnhub")
     if kueri_crypto:
-        hasil_crypto, err_crypto = cari_ticker_alpaca(kueri_crypto, "crypto")
+        hasil_crypto, err_crypto = cari_ticker_crypto(kueri_crypto)
         if err_crypto:
             st.caption(f"Gagal mencari: {err_crypto}")
         elif hasil_crypto:
-            label_hasil_c = [f"{s}  —  {n}" for s, n, _ in hasil_crypto]
-            pilihan_crypto = st.selectbox("Hasil pencarian", label_hasil_c, key="pilihan_crypto_alpaca")
-            if st.button("Tambahkan hasil pencarian", key="btn_tambah_crypto_alpaca"):
+            label_hasil_c = [f"{s}  —  {n}" for s, n in hasil_crypto]
+            pilihan_crypto = st.selectbox("Hasil pencarian", label_hasil_c, key="pilihan_crypto_finnhub")
+            if st.button("Tambahkan hasil pencarian", key="btn_tambah_crypto_finnhub"):
                 tambah_saham(pilihan_crypto.split("  —  ")[0])
                 st.rerun()
         else:
-            st.caption("Tidak ada hasil. Coba kata kunci lain.")
+            st.caption("Tidak ada hasil. Coba kata kunci lain (pencarian crypto dibatasi pasangan .../USDT di Binance).")
 
 with st.sidebar.expander("Tambah Manual (ketik kode ticker)"):
     tipe_manual = st.radio("Tipe", ["Saham", "Crypto"], horizontal=True, key="tipe_manual")
@@ -666,7 +651,7 @@ col_main = st.container()
 with col_main:
 
     # ============================================================
-    # 6. Fungsi Mengambil Data Harga via Alpaca (snapshot + 52w high/low)
+    # 6. Fungsi Mengambil Data via Finnhub (quote, profil, fundamental, candle crypto)
     # ============================================================
     def fmt(val, desimal=2):
         try:
@@ -677,165 +662,154 @@ with col_main:
             return None
 
 
+    def _cari_metrik(metric_dict: dict, *nama_field: str):
+        """Coba beberapa kemungkinan nama field metric Finnhub (field-nya
+        gak selalu konsisten antar tier/simbol) — dipakai kayak versi
+        Polygon dulu, sekarang buat parsing dict 'metric' dari /stock/metric."""
+        if not isinstance(metric_dict, dict):
+            return None
+        for nf in nama_field:
+            if nf in metric_dict and metric_dict[nf] is not None:
+                return metric_dict[nf]
+        return None
+
+
     @st.cache_data(ttl=900, show_spinner=False)
-    def ambil_snapshot_batch(daftar_stock: tuple, daftar_crypto: tuple):
-        """Ambil snapshot (harga terkini + harga kemarin) untuk sekumpulan
-        saham & crypto sekaligus (dibatch jadi 1-2 request, bukan per-ticker,
-        biar hemat kuota). Return dict {kode: {"harga":..., "harga_kemarin":...}}."""
-        hasil = {}
-
-        if daftar_stock:
-            data, err = _req_alpaca_data(
-                "/v2/stocks/snapshots", {"symbols": ",".join(daftar_stock), "feed": "iex"}
-            )
-            if not err and data:
-                for simbol, snap in (data.get("snapshots") or data).items():
-                    if not isinstance(snap, dict):
-                        continue
-                    harga = None
-                    if snap.get("latestTrade"):
-                        harga = snap["latestTrade"].get("p")
-                    if harga is None and snap.get("dailyBar"):
-                        harga = snap["dailyBar"].get("c")
-                    harga_kemarin = None
-                    if snap.get("prevDailyBar"):
-                        harga_kemarin = snap["prevDailyBar"].get("c")
-                    if harga is not None:
-                        hasil[simbol] = {"harga": harga, "harga_kemarin": harga_kemarin}
-
-        if daftar_crypto:
-            data, err = _req_alpaca_data(
-                "/v1beta3/crypto/us/snapshots", {"symbols": ",".join(daftar_crypto)}
-            )
-            if not err and data:
-                for simbol, snap in (data.get("snapshots") or {}).items():
-                    if not isinstance(snap, dict):
-                        continue
-                    harga = None
-                    if snap.get("latestTrade"):
-                        harga = snap["latestTrade"].get("p")
-                    if harga is None and snap.get("dailyBar"):
-                        harga = snap["dailyBar"].get("c")
-                    harga_kemarin = None
-                    if snap.get("prevDailyBar"):
-                        harga_kemarin = snap["prevDailyBar"].get("c")
-                    if harga is not None:
-                        hasil[simbol] = {"harga": harga, "harga_kemarin": harga_kemarin}
-
-        return hasil
-
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def ambil_52w_high_low_batch(daftar_stock: tuple, daftar_crypto: tuple):
-        """Ambil high/low ~52 minggu terakhir dari daily bars (dibatch)."""
-        hasil = {}
-        akhir = datetime.utcnow().date()
-        mulai = akhir - timedelta(days=370)
-
-        if daftar_stock:
-            data, err = _req_alpaca_data(
-                "/v2/stocks/bars",
-                {
-                    "symbols": ",".join(daftar_stock),
-                    "timeframe": "1Day",
-                    "start": mulai.isoformat(),
-                    "end": akhir.isoformat(),
-                    "limit": 10000,
-                    "feed": "iex",
-                    "adjustment": "split",
-                },
-            )
-            if not err and data and data.get("bars"):
-                for simbol, bars in data["bars"].items():
-                    if not bars:
-                        continue
-                    hasil[simbol] = (max(b["h"] for b in bars), min(b["l"] for b in bars))
-
-        if daftar_crypto:
-            data, err = _req_alpaca_data(
-                "/v1beta3/crypto/us/bars",
-                {
-                    "symbols": ",".join(daftar_crypto),
-                    "timeframe": "1Day",
-                    "start": mulai.isoformat(),
-                    "end": akhir.isoformat(),
-                    "limit": 10000,
-                },
-            )
-            if not err and data and data.get("bars"):
-                for simbol, bars in data["bars"].items():
-                    if not bars:
-                        continue
-                    hasil[simbol] = (max(b["h"] for b in bars), min(b["l"] for b in bars))
-
-        return hasil
+    def ambil_quote_saham(simbol: str):
+        data, err = _req_finnhub("/quote", {"symbol": simbol})
+        if err or not data:
+            return None
+        harga = data.get("c")
+        if not harga:
+            return None
+        return {"harga": harga, "harga_kemarin": data.get("pc")}
 
 
     @st.cache_data(ttl=6 * 3600, show_spinner=False)
-    def ambil_nama_exchange_saham(simbol: str):
-        """Ambil nama perusahaan & exchange dari daftar aset yang sudah di-cache
-        (dipakai buat label kartu & tebakan simbol TradingView)."""
-        semua, err = ambil_semua_aset("us_equity")
-        if err:
-            return simbol, None
-        for a in semua:
-            if a.get("symbol") == simbol:
-                return a.get("name", simbol), a.get("exchange")
-        return simbol, None
+    def ambil_profile_saham(simbol: str):
+        data, err = _req_finnhub("/stock/profile2", {"symbol": simbol})
+        if err or not data:
+            return None
+        return {
+            "nama": data.get("name", simbol),
+            "market_cap": (data.get("marketCapitalization") or 0) * 1_000_000 or None,
+            "mata_uang": data.get("currency", "USD"),
+            "exchange": data.get("exchange", ""),
+        }
+
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def ambil_metric_saham(simbol: str):
+        data, err = _req_finnhub("/stock/metric", {"symbol": simbol, "metric": "all"})
+        if err or not data:
+            return {}
+        return data.get("metric", {}) or {}
+
+
+    @st.cache_data(ttl=900, show_spinner=False)
+    def ambil_ringkasan_crypto(simbol: str):
+        """Ambil harga terkini, harga kemarin, dan 52W high/low crypto
+        sekaligus dari satu panggilan daily candle (~370 hari)."""
+        akhir = int(datetime.utcnow().timestamp())
+        mulai = int((datetime.utcnow() - timedelta(days=370)).timestamp())
+        data, err = _req_finnhub(
+            "/crypto/candle", {"symbol": simbol, "resolution": "D", "from": mulai, "to": akhir}
+        )
+        if err or not data or data.get("s") != "ok" or not data.get("c"):
+            return None
+        closes, highs, lows = data["c"], data["h"], data["l"]
+        return {
+            "harga": closes[-1],
+            "harga_kemarin": closes[-2] if len(closes) > 1 else None,
+            "tinggi_52w": max(highs),
+            "rendah_52w": min(lows),
+        }
 
 
     def bangun_ringkasan(daftar_kode: list) -> dict:
-        daftar_stock = tuple(k for k in daftar_kode if not is_crypto(k))
-        daftar_crypto = tuple(k for k in daftar_kode if is_crypto(k))
-
-        snapshot = ambil_snapshot_batch(daftar_stock, daftar_crypto)
-        hilo = ambil_52w_high_low_batch(daftar_stock, daftar_crypto)
-
         data_semua = {}
         for kode in daftar_kode:
-            snap = snapshot.get(kode)
-            if not snap or snap.get("harga") is None:
+            if is_crypto(kode):
+                ring = ambil_ringkasan_crypto(kode)
+                if not ring:
+                    continue
+                nama = KATEGORI_CRYPTO.get(kode, kode.split(":")[-1].replace("USDT", ""))
+                data_semua[kode] = {
+                    "Nama": nama, "Ticker": kode, "Tipe": "Crypto", "Mata Uang": "USDT",
+                    "Harga": ring["harga"], "Harga Kemarin": ring["harga_kemarin"],
+                    "Exchange": None, "Simbol TradingView": tebak_simbol_tradingview(kode),
+                    "Market Cap": None,
+                    "PER (Trailing)": None, "PER (Forward)": None, "PBV": None, "PEG Ratio": None,
+                    "Price/Sales": None, "EV/EBITDA": None, "EV/Revenue": None,
+                    "ROE (%)": None, "ROA (%)": None, "Net Profit Margin (%)": None,
+                    "Gross Margin (%)": None, "Operating Margin (%)": None,
+                    "EPS (Trailing)": None, "EPS (Forward)": None,
+                    "Current Ratio": None, "Quick Ratio": None, "DER (Debt to Equity)": None, "Total Debt": None,
+                    "Revenue Growth (%)": None, "Earnings Growth (%)": None,
+                    "Dividend Yield (%)": None, "Payout Ratio (%)": None,
+                    "Beta": None,
+                    "52W High": fmt(ring["tinggi_52w"], 4 if ring["tinggi_52w"] < 1 else 2),
+                    "52W Low": fmt(ring["rendah_52w"], 4 if ring["rendah_52w"] < 1 else 2),
+                }
+                time.sleep(0.1)
                 continue
 
-            tinggi_52w, rendah_52w = hilo.get(kode, (None, None))
-
-            if is_crypto(kode):
-                nama = KATEGORI_CRYPTO.get(kode, kode.replace("/USD", ""))
-                exch = None
-            else:
-                nama, exch = ambil_nama_exchange_saham(kode)
+            quote = ambil_quote_saham(kode)
+            if not quote:
+                continue
+            profil = ambil_profile_saham(kode) or {}
+            metric = ambil_metric_saham(kode)
 
             data_semua[kode] = {
-                "Nama": nama,
+                "Nama": profil.get("nama", kode),
                 "Ticker": kode,
-                "Tipe": "Crypto" if is_crypto(kode) else "Saham",
-                "Mata Uang": "USD",
-                "Harga": snap["harga"],
-                "Harga Kemarin": snap.get("harga_kemarin"),
-                "Exchange": exch,
-                "Simbol TradingView": tebak_simbol_tradingview(kode, exch),
+                "Tipe": "Saham",
+                "Mata Uang": profil.get("mata_uang", "USD"),
+                "Harga": quote["harga"],
+                "Harga Kemarin": quote.get("harga_kemarin"),
+                "Exchange": profil.get("exchange"),
+                "Simbol TradingView": tebak_simbol_tradingview(kode, profil.get("exchange")),
+                "Market Cap": profil.get("market_cap"),
 
-                # --- Rasio fundamental: TIDAK tersedia dari Alpaca Market Data API ---
-                "Market Cap": None,
-                "PER (Trailing)": None, "PER (Forward)": None, "PBV": None, "PEG Ratio": None,
-                "Price/Sales": None, "EV/EBITDA": None, "EV/Revenue": None,
-                "ROE (%)": None, "ROA (%)": None, "Net Profit Margin (%)": None,
-                "Gross Margin (%)": None, "Operating Margin (%)": None,
-                "EPS (Trailing)": None, "EPS (Forward)": None,
-                "Current Ratio": None, "Quick Ratio": None, "DER (Debt to Equity)": None, "Total Debt": None,
-                "Revenue Growth (%)": None, "Earnings Growth (%)": None,
-                "Dividend Yield (%)": None, "Payout Ratio (%)": None,
-                "Beta": None,
-                "52W High": fmt(tinggi_52w, 0),
-                "52W Low": fmt(rendah_52w, 0),
+                "PER (Trailing)": fmt(_cari_metrik(metric, "peTTM", "peBasicExclExtraTTM", "peExclExtraTTM", "peInclExtraTTM")),
+                "PER (Forward)": fmt(_cari_metrik(metric, "peForward")),
+                "PBV": fmt(_cari_metrik(metric, "pbAnnual", "pbQuarterly", "pbTTM")),
+                "PEG Ratio": fmt(_cari_metrik(metric, "pegRatio", "pegTTM")),
+                "Price/Sales": fmt(_cari_metrik(metric, "psTTM", "psAnnual")),
+                "EV/EBITDA": fmt(_cari_metrik(metric, "currentEv/EBITDATTM", "evEbitdaTTM")),
+                "EV/Revenue": fmt(_cari_metrik(metric, "evRevenueTTM")),
+
+                "ROE (%)": fmt(_cari_metrik(metric, "roeTTM", "roeRfy", "roeAnnual")),
+                "ROA (%)": fmt(_cari_metrik(metric, "roaTTM", "roaRfy", "roaAnnual")),
+                "Net Profit Margin (%)": fmt(_cari_metrik(metric, "netProfitMarginTTM", "netProfitMarginAnnual")),
+                "Gross Margin (%)": fmt(_cari_metrik(metric, "grossMarginTTM", "grossMarginAnnual")),
+                "Operating Margin (%)": fmt(_cari_metrik(metric, "operatingMarginTTM", "operatingMarginAnnual")),
+                "EPS (Trailing)": fmt(_cari_metrik(metric, "epsBasicExclExtraItemsTTM", "epsTTM", "epsInclExtraItemsTTM")),
+                "EPS (Forward)": fmt(_cari_metrik(metric, "epsForward")),
+
+                "Current Ratio": fmt(_cari_metrik(metric, "currentRatioAnnual", "currentRatioQuarterly")),
+                "Quick Ratio": fmt(_cari_metrik(metric, "quickRatioAnnual", "quickRatioQuarterly")),
+                "DER (Debt to Equity)": fmt(_cari_metrik(metric, "totalDebt/totalEquityAnnual", "totalDebt/totalEquityQuarterly")),
+                "Total Debt": _cari_metrik(metric, "totalDebtAnnual", "totalDebtQuarterly"),
+
+                "Revenue Growth (%)": fmt(_cari_metrik(metric, "revenueGrowthTTMYoy", "revenueGrowthQuarterlyYoy")),
+                "Earnings Growth (%)": fmt(_cari_metrik(metric, "epsGrowthTTMYoy", "epsGrowthQuarterlyYoy")),
+                "Dividend Yield (%)": fmt(_cari_metrik(metric, "dividendYieldIndicatedAnnual", "currentDividendYieldTTM")),
+                "Payout Ratio (%)": fmt(_cari_metrik(metric, "payoutRatioTTM", "payoutRatioAnnual")),
+
+                "Beta": fmt(_cari_metrik(metric, "beta")),
+                "52W High": fmt(_cari_metrik(metric, "52WeekHigh"), 0),
+                "52W Low": fmt(_cari_metrik(metric, "52WeekLow"), 0),
             }
+            time.sleep(0.1)
+
         return data_semua
 
 
     def render_tradingview_widget(simbol_tv: str, tinggi: int = 550, chart_key: str = "tv", tema: str = "dark"):
         """Render TradingView Advanced Real-Time Chart Widget resmi.
         Widget ini narik data historis & real-time-nya sendiri dari
-        TradingView — TIDAK memakai data OHLC dari Alpaca sama sekali."""
+        TradingView — TIDAK memakai data harga dari Finnhub sama sekali."""
         container_id = f"tradingview_{chart_key}"
         html = f"""
         <div class="tradingview-widget-container" style="height:{tinggi}px;">
@@ -872,21 +846,26 @@ with col_main:
         st.stop()
 
     # ============================================================
-    # 8. Ambil data semua saham/crypto (dibatch, bukan loop per-ticker)
+    # 8. Ambil data semua saham/crypto
+    #    Catatan: Finnhub free tier gak punya endpoint batch multi-simbol
+    #    kayak Alpaca/Polygon, jadi tetap loop per-simbol — tapi limitnya
+    #    60 request/menit jadi jauh lebih longgar.
     # ============================================================
-    with st.spinner(f"Mengambil data untuk {len(daftar_saham)} saham/crypto dari Alpaca..."):
+    with st.spinner(f"Mengambil data untuk {len(daftar_saham)} saham/crypto dari Finnhub..."):
         data_semua = bangun_ringkasan(daftar_saham)
 
     gagal = [k for k in daftar_saham if k not in data_semua]
     if gagal:
         st.error("Gagal mengambil data untuk: " + ", ".join(gagal))
         st.caption(
-            "Cek lagi API Key Alpaca kamu, atau pastikan kode ticker/pair-nya benar "
-            "(saham AS pakai kode biasa mis. AAPL, crypto pakai format SIMBOL/USD mis. BTC/USD)."
+            "Cek lagi API Key Finnhub kamu, atau pastikan kode ticker/pair-nya benar "
+            "(saham AS pakai kode biasa mis. AAPL, crypto pakai format EXCHANGE:PAIR mis. BINANCE:BTCUSDT)."
         )
         if st.button("Coba lagi", key="btn_coba_lagi_gagal"):
-            ambil_snapshot_batch.clear()
-            ambil_52w_high_low_batch.clear()
+            ambil_quote_saham.clear()
+            ambil_profile_saham.clear()
+            ambil_metric_saham.clear()
+            ambil_ringkasan_crypto.clear()
             st.rerun()
 
     if len(data_semua) < 1:
@@ -895,6 +874,18 @@ with col_main:
 
     def fmt_rp(v):
         return f"{v:,.2f}" if v is not None else "N/A"
+
+
+    def fmt_cap(v):
+        if v is None:
+            return "N/A"
+        if v >= 1e12:
+            return f"{v/1e12:.2f} T"
+        if v >= 1e9:
+            return f"{v/1e9:.2f} B"
+        if v >= 1e6:
+            return f"{v/1e6:.2f} M"
+        return f"{v:,.0f}"
 
 
     # ============================================================
@@ -962,10 +953,29 @@ with col_main:
         if harga_kemarin:
             persen = (d["Harga"] - harga_kemarin) / harga_kemarin * 100
         persen_txt = f"{persen:+.2f}%" if persen is not None else "N/A"
-        h52 = d.get("52W High")
-        l52 = d.get("52W Low")
-        h52_txt = f"{h52:,.0f}" if h52 is not None else "N/A"
-        l52_txt = f"{l52:,.0f}" if l52 is not None else "N/A"
+
+        if d["Tipe"] == "Crypto":
+            return (
+                '<div class="stock-card">'
+                f'<h4>{d["Nama"]}</h4>'
+                f'<span class="ticker-tag">{d["Ticker"]}</span>'
+                '<div class="metric-row">'
+                '<span class="metric-label">Harga</span>'
+                f'<span class="metric-value">{d["Mata Uang"]} {fmt_rp(d["Harga"])}</span>'
+                '</div>'
+                '<div class="metric-row">'
+                '<span class="metric-label">Perubahan</span>'
+                f'<span class="metric-value">{persen_txt}</span>'
+                '</div>'
+                '<div class="metric-row">'
+                '<span class="metric-label">Rasio Fundamental</span>'
+                '<span class="metric-value">N/A (Crypto)</span>'
+                '</div>'
+                '</div>'
+            )
+        per_val = d['PER (Trailing)'] if d['PER (Trailing)'] else 'N/A'
+        pbv_val = d['PBV'] if d['PBV'] else 'N/A'
+        roe_val = d['ROE (%)'] if d['ROE (%)'] else 'N/A'
         return (
             '<div class="stock-card">'
             f'<h4>{d["Nama"]}</h4>'
@@ -975,16 +985,20 @@ with col_main:
             f'<span class="metric-value">{d["Mata Uang"]} {fmt_rp(d["Harga"])}</span>'
             '</div>'
             '<div class="metric-row">'
-            '<span class="metric-label">Perubahan</span>'
-            f'<span class="metric-value">{persen_txt}</span>'
+            '<span class="metric-label">Market Cap</span>'
+            f'<span class="metric-value">{fmt_cap(d["Market Cap"])}</span>'
             '</div>'
             '<div class="metric-row">'
-            '<span class="metric-label">52W High/Low</span>'
-            f'<span class="metric-value">{h52_txt} / {l52_txt}</span>'
+            '<span class="metric-label">PER</span>'
+            f'<span class="metric-value">{per_val} x</span>'
             '</div>'
             '<div class="metric-row">'
-            '<span class="metric-label">Rasio Fundamental</span>'
-            '<span class="metric-value">N/A</span>'
+            '<span class="metric-label">PBV</span>'
+            f'<span class="metric-value">{pbv_val} x</span>'
+            '</div>'
+            '<div class="metric-row">'
+            '<span class="metric-label">ROE</span>'
+            f'<span class="metric-value">{roe_val} %</span>'
             '</div>'
             '</div>'
         )
@@ -1002,8 +1016,8 @@ with col_main:
     st.subheader("Pergerakan Harga (TradingView Widget)")
     st.caption(
         "Grafik ini adalah widget resmi TradingView yang narik data historis & real-time-nya "
-        "langsung dari TradingView — bukan dari Alpaca. Tebakan simbol TradingView dibuat "
-        "otomatis dari exchange yang tercatat di Alpaca; kalau grafiknya kosong/salah emiten, "
+        "langsung dari TradingView — bukan dari Finnhub. Tebakan simbol TradingView dibuat "
+        "otomatis dari exchange yang tercatat di Finnhub; kalau grafiknya kosong/salah emiten, "
         "edit kotak simbol di bawah chart-nya secara manual."
     )
 
@@ -1029,8 +1043,10 @@ with col_main:
     col_refresh, _ = st.columns([1, 3])
     with col_refresh:
         if st.button("Refresh Data Ringkasan", key="btn_refresh_manual", use_container_width=True):
-            ambil_snapshot_batch.clear()
-            ambil_52w_high_low_batch.clear()
+            ambil_quote_saham.clear()
+            ambil_profile_saham.clear()
+            ambil_metric_saham.clear()
+            ambil_ringkasan_crypto.clear()
             st.rerun()
 
     if not tickers_dipilih:
@@ -1048,11 +1064,11 @@ with col_main:
                     default_simbol = d.get("Simbol TradingView", tebak_simbol_tradingview(tk))
                     simbol_tv = st.text_input(
                         "Simbol TradingView", value=default_simbol, key=key_override,
-                        help="Format: EXCHANGE:SIMBOL, contoh NASDAQ:AAPL atau COINBASE:BTCUSD.",
+                        help="Format: EXCHANGE:SIMBOL, contoh NASDAQ:AAPL atau BINANCE:BTCUSDT.",
                     )
                     render_tradingview_widget(
                         simbol_tv, tinggi=tinggi_per_chart,
-                        chart_key=f"{tk.replace('/', '_')}", tema=tema_chart_tv,
+                        chart_key=f"{tk.replace(':', '_')}", tema=tema_chart_tv,
                     )
 
         st.caption(
@@ -1067,9 +1083,9 @@ with col_main:
     # ============================================================
     st.subheader("Perbandingan Rasio Keuangan")
     st.caption(
-        "Alpaca Market Data API tidak menyediakan data fundamental/laporan keuangan, jadi semua "
-        "rasio di bawah ini (kecuali 52W High/Low, yang murni data harga) tampil **N/A** sebagai "
-        "placeholder untuk pengembangan berikutnya."
+        "Rasio fundamental (PER, PBV, ROE, dsb) hanya berlaku untuk saham — akan tampil kosong "
+        "untuk crypto. Beberapa rasio (PER/EPS Forward, PEG Ratio, EV/EBITDA, EV/Revenue) sering "
+        "gak lengkap di tier gratis Finnhub, jadi bisa tetap tampil N/A tergantung simbolnya."
     )
 
     KATEGORI_RASIO = {
@@ -1088,30 +1104,30 @@ with col_main:
     PALET_WARNA = px.colors.qualitative.Set2
 
     PENJELASAN_INDIKATOR = {
-        "PER (Trailing)": "Price to Earnings Ratio berdasarkan laba 12 bulan terakhir. Belum tersedia — Alpaca Market Data API tidak menyediakan data laporan keuangan.",
-        "PER (Forward)": "PER berdasarkan estimasi laba ke depan. Belum tersedia dari Alpaca.",
-        "PBV": "Price to Book Value. Belum tersedia — butuh data ekuitas/nilai buku yang tidak disediakan Alpaca.",
-        "PEG Ratio": "PER dibagi tingkat pertumbuhan laba. Belum tersedia dari Alpaca.",
-        "Price/Sales": "Harga saham dibanding pendapatan. Belum tersedia — butuh data pendapatan perusahaan.",
-        "EV/EBITDA": "Enterprise Value dibanding EBITDA. Belum tersedia dari Alpaca.",
-        "EV/Revenue": "Enterprise Value dibanding pendapatan. Belum tersedia dari Alpaca.",
-        "ROE (%)": "Return on Equity. Belum tersedia — butuh data laba bersih & ekuitas dari laporan keuangan.",
-        "ROA (%)": "Return on Assets. Belum tersedia dari Alpaca.",
-        "Net Profit Margin (%)": "Persentase laba bersih dari pendapatan. Belum tersedia dari Alpaca.",
-        "Gross Margin (%)": "Persentase laba kotor dari pendapatan. Belum tersedia dari Alpaca.",
-        "Operating Margin (%)": "Persentase laba operasional dari pendapatan. Belum tersedia dari Alpaca.",
-        "EPS (Trailing)": "Laba bersih 12 bulan terakhir per saham. Belum tersedia dari Alpaca.",
-        "EPS (Forward)": "EPS berdasarkan estimasi laba ke depan. Belum tersedia dari Alpaca.",
-        "Current Ratio": "Aset lancar dibanding kewajiban lancar. Belum tersedia — butuh data neraca keuangan.",
-        "Quick Ratio": "Mirip Current Ratio tapi persediaan dikeluarkan. Belum tersedia dari Alpaca.",
-        "DER (Debt to Equity)": "Total kewajiban dibanding ekuitas. Belum tersedia dari Alpaca.",
-        "Revenue Growth (%)": "Pertumbuhan pendapatan tahunan (YoY). Belum tersedia dari Alpaca.",
-        "Earnings Growth (%)": "Pertumbuhan laba bersih tahunan (YoY). Belum tersedia dari Alpaca.",
-        "Dividend Yield (%)": "Total dividen tunai 12 bulan terakhir dibanding harga saham. Belum tersedia dari Alpaca.",
-        "Payout Ratio (%)": "Persentase laba per saham yang dibagikan sebagai dividen. Belum tersedia dari Alpaca.",
-        "Beta": "Ukuran volatilitas saham dibanding pasar. Belum dihitung di versi ini (bisa dihitung manual dari data harga historis vs indeks acuan, tapi belum diimplementasikan).",
-        "52W High": "Harga tertinggi dalam ~52 minggu terakhir, dihitung dari data harian Alpaca.",
-        "52W Low": "Harga terendah dalam ~52 minggu terakhir, dihitung dari data harian Alpaca.",
+        "PER (Trailing)": "Price to Earnings Ratio berdasarkan laba 12 bulan terakhir. Menunjukkan berapa kali investor membayar harga saham dibanding laba bersih per saham. Semakin rendah, semakin 'murah' saham relatif terhadap labanya — tapi harus dibandingkan dengan saham sejenis.",
+        "PER (Forward)": "PER berdasarkan estimasi laba 12 bulan ke depan. Sering tidak tersedia di tier gratis Finnhub, tampil N/A kalau begitu.",
+        "PBV": "Price to Book Value — harga saham dibanding nilai buku (aset bersih) per saham. PBV di bawah 1 berarti saham diperdagangkan di bawah nilai aset bersihnya.",
+        "PEG Ratio": "PER dibagi tingkat pertumbuhan laba. Jarang tersedia lengkap di tier gratis Finnhub.",
+        "Price/Sales": "Harga saham (via market cap) dibanding total pendapatan. Berguna untuk menilai perusahaan yang belum untung tapi pendapatannya besar.",
+        "EV/EBITDA": "Enterprise Value dibanding EBITDA. Kadang tidak tersedia dari Finnhub tergantung simbolnya.",
+        "EV/Revenue": "Enterprise Value dibanding total pendapatan. Kadang tidak tersedia dari Finnhub tergantung simbolnya.",
+        "ROE (%)": "Return on Equity — seberapa efisien perusahaan menghasilkan laba dari modal pemegang saham.",
+        "ROA (%)": "Return on Assets — seberapa efisien perusahaan menghasilkan laba dari seluruh asetnya.",
+        "Net Profit Margin (%)": "Persentase laba bersih dari setiap dolar pendapatan.",
+        "Gross Margin (%)": "Persentase laba kotor (pendapatan dikurangi harga pokok penjualan) dari total pendapatan.",
+        "Operating Margin (%)": "Persentase laba operasional (sebelum bunga & pajak) dari pendapatan.",
+        "EPS (Trailing)": "Earning per Share — laba bersih 12 bulan terakhir dibagi jumlah saham beredar.",
+        "EPS (Forward)": "EPS berdasarkan estimasi laba ke depan. Sering tidak tersedia di tier gratis Finnhub.",
+        "Current Ratio": "Aset lancar dibanding kewajiban lancar. Mengukur kemampuan bayar utang jangka pendek.",
+        "Quick Ratio": "Mirip Current Ratio tapi persediaan dikeluarkan.",
+        "DER (Debt to Equity)": "Total kewajiban dibanding ekuitas. Semakin tinggi, semakin besar perusahaan dibiayai utang dibanding modal sendiri.",
+        "Revenue Growth (%)": "Persentase pertumbuhan pendapatan (YoY).",
+        "Earnings Growth (%)": "Persentase pertumbuhan laba/EPS (YoY).",
+        "Dividend Yield (%)": "Estimasi dividend yield tahunan dibanding harga saham saat ini.",
+        "Payout Ratio (%)": "Perkiraan persentase laba per saham yang dibagikan sebagai dividen.",
+        "Beta": "Ukuran volatilitas saham dibanding pasar (indeks acuan).",
+        "52W High": "Harga tertinggi dalam ~52 minggu terakhir.",
+        "52W Low": "Harga terendah dalam ~52 minggu terakhir.",
     }
 
 
@@ -1220,7 +1236,7 @@ with col_main:
 # ============================================================
 # 9c. Asisten AI — panel persisten di kolom kanan
 # ============================================================
-PATH_MEMORI_AI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memori_ai_saham_alpaca.json")
+PATH_MEMORI_AI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memori_ai_saham_finnhub.json")
 
 
 def muat_memori_ai():
@@ -1241,17 +1257,16 @@ def simpan_memori_ai(riwayat: list, catatan_preferensi: str):
         pass
 
 
-SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham AS & crypto di dalam sebuah aplikasi pembanding. Tugasmu membantu pengguna memahami data harga yang sedang mereka bandingkan.
+SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham AS & crypto di dalam sebuah aplikasi pembanding. Tugasmu membantu pengguna memahami data rasio keuangan dan harga yang sedang mereka bandingkan.
 
-Data saham/crypto yang sedang dibandingkan pengguna saat ini (data harga dari Alpaca Market Data API):
+Data saham/crypto yang sedang dibandingkan pengguna saat ini (sumber data: Finnhub API):
 {konteks}
 {blok_preferensi}
 {blok_dokumen}
 Instruksi:
-- PENTING: aplikasi ini TIDAK punya data fundamental/laporan keuangan (PER, PBV, ROE, EPS, dividend, dsb) — semua rasio itu N/A. Kalau pengguna tanya soal itu, katakan terus terang datanya belum tersedia di aplikasi ini, jangan mengarang angka.
-- Kamu cuma punya data harga terkini, harga kemarin, dan 52-week high/low. Analisis dari situ (posisi harga relatif terhadap 52W high/low, arah pergerakan sederhana), plus wawasan umum yang kamu tahu soal perusahaan/coin tersebut secara kualitatif — tapi jelaskan mana yang data aktual vs pengetahuan umum.
+- Jawab berdasarkan data di atas, jangan mengarang angka yang tidak ada. Kalau suatu rasio bernilai N/A (misalnya karena crypto tidak punya laporan keuangan, atau data belum tersedia dari Finnhub untuk simbol tersebut), katakan terus terang bahwa datanya tidak tersedia, jangan menebak.
 - Berikan analisis yang seimbang: sebutkan potensi kelebihan DAN risiko/kekurangan, bukan cuma satu sisi.
-- Ini BUKAN rekomendasi beli/jual yang pasti — selalu jelaskan bahwa keputusan akhir ada di tangan pengguna.
+- Boleh memberi pandangan soal valuasi (relatif mahal/murah), tren, dan rasio, tapi ini BUKAN rekomendasi beli/jual yang pasti — selalu jelaskan bahwa keputusan akhir ada di tangan pengguna.
 - Jangan pernah mengklaim kepastian arah harga di masa depan, apalagi untuk crypto yang sangat volatil.
 - Kalau ada catatan preferensi pengguna di atas, sesuaikan gaya jawabanmu dengan itu.
 - Jawab dalam Bahasa Indonesia, ringkas dan jelas, boleh pakai bullet point kalau perlu.
@@ -1261,15 +1276,15 @@ Instruksi:
 def bangun_konteks_saham(data_semua: dict) -> str:
     baris = []
     for kode, d in data_semua.items():
-        h52 = d.get("52W High")
-        l52 = d.get("52W Low")
-        h52_txt = f"{h52}" if h52 is not None else "N/A"
-        l52_txt = f"{l52}" if l52 is not None else "N/A"
-        baris.append(
-            f"- {d['Nama']} ({kode}, {d['Tipe']}): Harga {d['Mata Uang']} {d['Harga']}, "
-            f"Harga kemarin {d.get('Harga Kemarin')}, 52W High {h52_txt}, 52W Low {l52_txt} "
-            f"(rasio fundamental: N/A, tidak tersedia dari Alpaca)"
-        )
+        if d["Tipe"] == "Crypto":
+            baris.append(f"- {d['Nama']} ({kode}): Harga {d['Mata Uang']} {d['Harga']} (crypto, tidak ada rasio fundamental)")
+        else:
+            baris.append(
+                f"- {d['Nama']} ({kode}): Harga {d['Mata Uang']} {d['Harga']}, "
+                f"PER {d['PER (Trailing)']}, PBV {d['PBV']}, ROE {d['ROE (%)']}%, "
+                f"DER {d['DER (Debt to Equity)']}, Dividend Yield {d['Dividend Yield (%)']}%, "
+                f"Revenue Growth {d['Revenue Growth (%)']}%, EPS {d['EPS (Trailing)']}"
+            )
     return "\n".join(baris)
 
 
@@ -1282,10 +1297,10 @@ if "catatan_preferensi_ai" not in st.session_state:
     st.session_state.catatan_preferensi_ai = ""
 
 SARAN_PROMPT_AI = [
-    ("📊", "Bandingkan posisi harga saham-saham ini vs 52W high/low"),
+    ("📊", "Bandingkan valuasi saham-saham ini"),
     ("⚠️", "Apa risiko utama dari saham/crypto ini?"),
-    ("💡", "Jelaskan model bisnis masing-masing secara umum"),
-    ("📈", "Mana yang pergerakan harganya paling volatil?"),
+    ("💰", "Mana yang dividennya paling menarik?"),
+    ("📈", "Bagaimana kesehatan finansialnya?"),
 ]
 
 
@@ -1463,7 +1478,7 @@ with st.container(key="panel_asisten_ai"):
 
         with st.expander("Preferensi & Data Tambahan"):
             st.caption(
-                "Tulis gaya analisis yang kamu suka (mis. 'fokus ke risiko volatilitas', 'jelasin singkat pakai bullet'). "
+                "Tulis gaya analisis yang kamu suka (mis. 'fokus ke dividend yield', 'jelasin singkat pakai bullet'). "
                 "Ini tersimpan permanen dan otomatis dipakai AI di setiap obrolan berikutnya."
             )
             catatan_baru = st.text_area(
