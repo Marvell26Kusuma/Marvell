@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import json
 import streamlit as st
 import streamlit.components.v1 as components
@@ -41,15 +42,24 @@ def dapatkan_sesi_yf():
 
 
 # ============================================================
+# 0a. Direktori dasar — script INI adalah file utama (root project),
+#    jadi cukup pakai folder-nya sendiri (bukan naik satu level kayak
+#    file di dalam pages/). daftar_saham_idx.csv & file-file lain yang
+#    auto-generate (daftar_tersimpan_idx.json, memori_ai_saham.json)
+#    semuanya ditaruh sejajar file ini juga.
+# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+# ============================================================
 # 0b. Penyimpanan daftar saham yang dibandingkan — KHUSUS halaman ini
 #    (page 1 / IDX + global via yfinance). Disimpan ke file JSON terpisah
 #    dari page lain (mis. page saham AS & crypto via Finnhub) supaya
 #    daftarnya gak kecampur — masing-masing "pages" punya file
-#    penyimpanannya sendiri berdasarkan nama file script ini sendiri.
+#    penyimpanannya sendiri berdasarkan nama filenya sendiri, tapi semua
+#    disimpan di folder utama yang sama (BASE_DIR) biar konsisten.
 # ============================================================
-PATH_DAFTAR_TERSIMPAN = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "daftar_tersimpan_idx.json"
-)
+PATH_DAFTAR_TERSIMPAN = BASE_DIR / "daftar_tersimpan_idx.json"
 DAFTAR_SAHAM_DEFAULT = ["BBCA.JK", "BBRI.JK"]
 
 
@@ -234,7 +244,7 @@ st.markdown(
 #    pada nama perusahaan, karena data sumber BEI tidak menyertakan
 #    kolom sektor resmi.
 # ============================================================
-PATH_CSV_SAHAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daftar_saham_idx.csv")
+PATH_CSV_SAHAM = BASE_DIR / "daftar_saham_idx.csv"
 
 
 @st.cache_data(show_spinner=False)
@@ -1038,7 +1048,7 @@ with col_main:
 # ============================================================
 # 9c. Asisten AI — panel persisten di kolom kanan
 # ============================================================
-PATH_MEMORI_AI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memori_ai_saham.json")
+PATH_MEMORI_AI = BASE_DIR / "memori_ai_saham.json"
 
 
 def muat_memori_ai():
