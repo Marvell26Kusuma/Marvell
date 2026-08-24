@@ -403,13 +403,23 @@ def _req_binance(path: str, params: dict = None, timeout: int = 15):
     sekali buat data harga/market publik. Mengembalikan (json_data, error_msg)."""
     url = f"{BINANCE_BASE_URL}{path}"
     try:
-        resp = requests.get(url, params=params or {}, timeout=timeout)
+        resp = requests.get(
+            url, params=params or {}, timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; StreamlitApp/1.0)"},
+        )
     except requests.exceptions.RequestException as e:
         return None, f"Gagal konek ke Binance: {e}"
+    if resp.status_code == 451:
+        return None, (
+            "Binance menolak request ini dengan status 451 (Unavailable For Legal Reasons) — "
+            "ini biasanya karena IP server tempat app di-deploy kena blokir region/datacenter "
+            "Binance (sering kejadian di hosting cloud seperti Streamlit Community Cloud yang "
+            "IP-nya di AS). Coba jalankan app-nya secara lokal untuk memastikan."
+        )
     if resp.status_code == 429:
         return None, "Rate limit Binance tercapai. Tunggu sebentar lalu coba lagi."
     if resp.status_code != 200:
-        return None, f"Binance mengembalikan status {resp.status_code}."
+        return None, f"Binance mengembalikan status {resp.status_code}: {resp.text[:200]}"
     try:
         return resp.json(), None
     except Exception:
@@ -743,12 +753,17 @@ with col_main:
         """Ambil harga terkini + perubahan 24 jam dari Binance ticker/24hr,
         dan 52W high/low dari Binance klines harian (~370 hari). kode
         formatnya 'BINANCE:BTCUSDT' — prefix exchange dibuang dulu sebelum
-        dipakai manggil Binance (Binance gak butuh prefix itu)."""
+        dipakai manggil Binance (Binance gak butuh prefix itu).
+        Return (dict_atau_None, pesan_error_atau_None) — errornya selalu
+        dikembalikan biar gampang didiagnosis kalau gagal (mis. request
+        dari IP cloud/datacenter suka diblokir Binance dengan status 451)."""
         pasangan = kode.split(":")[-1]
 
         ticker, err1 = _req_binance("/api/v3/ticker/24hr", {"symbol": pasangan})
-        if err1 or not ticker:
-            return None
+        if err1:
+            return None, f"ticker/24hr: {err1}"
+        if not ticker or "lastPrice" not in ticker:
+            return None, f"ticker/24hr: respons gak sesuai dugaan — {ticker}"
 
         klines, err2 = _req_binance(
             "/api/v3/klines", {"symbol": pasangan, "interval": "1d", "limit": 370}
@@ -757,7 +772,7 @@ with col_main:
         harga = float(ticker.get("lastPrice", 0)) or None
         harga_kemarin = float(ticker.get("prevClosePrice", 0)) or None
         if not harga:
-            return None
+            return None, f"harga dari ticker/24hr kosong/nol — respons: {ticker}"
 
         tinggi_52w = rendah_52w = None
         if not err2 and klines:
@@ -769,15 +784,17 @@ with col_main:
             "harga_kemarin": harga_kemarin,
             "tinggi_52w": tinggi_52w,
             "rendah_52w": rendah_52w,
-        }
+        }, None
 
 
     def bangun_ringkasan(daftar_kode: list) -> dict:
         data_semua = {}
+        error_detail = {}
         for kode in daftar_kode:
             if is_crypto(kode):
-                ring = ambil_ringkasan_crypto(kode)
+                ring, err = ambil_ringkasan_crypto(kode)
                 if not ring:
+                    error_detail[kode] = err or "tidak diketahui"
                     continue
                 nama = KATEGORI_CRYPTO.get(kode, kode.split(":")[-1].replace("USDT", ""))
                 data_semua[kode] = {
@@ -802,6 +819,7 @@ with col_main:
 
             quote = ambil_quote_saham(kode)
             if not quote:
+                error_detail[kode] = "quote Finnhub kosong/gagal (cek API key atau kode ticker)"
                 continue
             profil = ambil_profile_saham(kode) or {}
             metric = ambil_metric_saham(kode)
@@ -849,7 +867,7 @@ with col_main:
             }
             time.sleep(0.1)
 
-        return data_semua
+        return data_semua, error_detail
 
 
     def render_tradingview_widget(simbol_tv: str, tinggi: int = 550, chart_key: str = "tv", tema: str = "dark"):
@@ -898,11 +916,13 @@ with col_main:
     #    60 request/menit jadi jauh lebih longgar.
     # ============================================================
     with st.spinner(f"Mengambil data untuk {len(daftar_saham)} saham/crypto dari Finnhub..."):
-        data_semua = bangun_ringkasan(daftar_saham)
+        data_semua, error_detail = bangun_ringkasan(daftar_saham)
 
     gagal = [k for k in daftar_saham if k not in data_semua]
     if gagal:
-        st.error("Gagal mengambil data untuk: " + ", ".join(gagal))
+        st.error("Gagal mengambil data untuk beberapa simbol:")
+        for k in gagal:
+            st.caption(f"**{k}** — {error_detail.get(k, 'tidak diketahui')}")
         st.caption(
             "Cek lagi API Key Finnhub kamu, atau pastikan kode ticker/pair-nya benar "
             "(saham AS pakai kode biasa mis. AAPL, crypto pakai format EXCHANGE:PAIR mis. BINANCE:BTCUSDT)."
