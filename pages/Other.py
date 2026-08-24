@@ -22,7 +22,7 @@ except ImportError:
 
 
 # ============================================================
-# 0. Konstanta & Helper Finnhub API + Binance Public API
+# 0. Konstanta & Helper Finnhub API + CoinGecko Public API
 # ============================================================
 # Kenapa Finnhub (buat saham): satu API key aja (gak kayak Alpaca yang
 # butuh key ID + secret), free tier 60 request/menit, dan yang penting —
@@ -33,16 +33,16 @@ except ImportError:
 # bisa tampil N/A kalau datanya emang gak disediakan Finnhub buat simbol
 # tersebut.
 #
-# CATATAN PENTING soal crypto: endpoint candle/OHLC Finnhub (termasuk
-# /crypto/candle) sudah dikunci ke plan BERBAYAR sejak beberapa tahun
-# terakhir — di tier gratis baliknya error "You don't have access to this
-# resource". Karena Finnhub gak punya endpoint "quote" khusus buat crypto
-# (cuma ada candle), harga & 52W high/low crypto di app ini ditarik dari
-# **Binance Public API** (api.binance.com) — gratis, gak perlu API key
-# sama sekali, dan formatnya udah cocok sama simbol TradingView yang
-# dipakai (BINANCE:BTCUSDT).
+# CATATAN PENTING soal crypto: sempat coba Binance Public API buat data
+# crypto, tapi banyak hosting cloud (termasuk Streamlit Community Cloud)
+# IP-nya diblokir Binance dengan status 451 (Unavailable For Legal
+# Reasons) — jadi diganti ke **CoinGecko Public API** (api.coingecko.com),
+# yang gratis, gak perlu API key, dan gak menerapkan blokir semacam itu.
+# CoinGecko pakai "coin id" (mis. 'bitcoin', bukan pair 'BTCUSDT'), dan
+# bisa nge-batch banyak coin sekaligus dalam satu request — lebih efisien
+# dari pendekatan Binance yang harus loop satu-satu.
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
-BINANCE_BASE_URL = "https://api.binance.com"
+COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 
 
 def finnhub_token() -> str:
@@ -83,27 +83,37 @@ def _req_finnhub(path: str, params: dict = None, timeout: int = 15):
 
 
 def is_crypto(kode: str) -> bool:
-    # Simbol crypto Finnhub selalu berformat "EXCHANGE:PAIR", mis. BINANCE:BTCUSDT.
-    # Simbol saham AS di Finnhub gak pernah pakai titik dua, jadi ini aman dipakai
-    # sebagai penanda.
-    return ":" in kode
+    # Simbol crypto internal di app ini selalu berformat "CG:<coingecko_id>",
+    # mis. CG:bitcoin. Simbol saham AS dari Finnhub gak pernah pakai prefix
+    # ini, jadi aman dipakai sebagai penanda.
+    return kode.startswith("CG:")
 
 
 def label_tampil_ticker(kode: str) -> str:
     if is_crypto(kode):
-        return f"{kode} (Crypto)"
+        return f"{kode.split(':', 1)[1].capitalize()} (Crypto)"
     return kode.upper()
 
 
-def normalisasi_kode_crypto(kode: str, exchange: str = "BINANCE") -> str:
-    """Ubah input user semacam 'BTC' / 'btc-usdt' / 'BTCUSDT' jadi format
-    Finnhub 'BINANCE:BTCUSDT'."""
-    k = kode.strip().upper().replace("-", "").replace(" ", "").replace("/", "")
-    if ":" in k:
-        return k
-    if not k.endswith("USDT") and not k.endswith("USD"):
-        k = f"{k}USDT"
-    return f"{exchange}:{k}"
+def _req_coingecko(path: str, params: dict = None, timeout: int = 15):
+    """Wrapper request ke CoinGecko Public API — gak perlu API key sama
+    sekali. Mengembalikan (json_data, error_msg)."""
+    url = f"{COINGECKO_BASE_URL}{path}"
+    try:
+        resp = requests.get(
+            url, params=params or {}, timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; StreamlitApp/1.0)"},
+        )
+    except requests.exceptions.RequestException as e:
+        return None, f"Gagal konek ke CoinGecko: {e}"
+    if resp.status_code == 429:
+        return None, "Rate limit CoinGecko tercapai. Tunggu sebentar lalu coba lagi."
+    if resp.status_code != 200:
+        return None, f"CoinGecko mengembalikan status {resp.status_code}: {resp.text[:200]}"
+    try:
+        return resp.json(), None
+    except Exception:
+        return None, "Respons CoinGecko tidak bisa dibaca (bukan JSON valid)."
 
 
 # ============================================================
@@ -117,7 +127,7 @@ st.info(
     "**Catatan:** data saham (harga + rasio fundamental seperti PER, PBV, ROE, dividend, dst) "
     "ditarik dari **Finnhub**. Beberapa rasio yang emang jarang lengkap di tier gratis Finnhub "
     "(PEG Ratio, EV/EBITDA, EV/Revenue, PER/EPS Forward) bisa tampil **N/A**. Data harga & "
-    "52W high/low **crypto** ditarik dari **Binance Public API** (gratis, tanpa API key) — "
+    "52W high/low **crypto** ditarik dari **CoinGecko Public API** (gratis, tanpa API key) — "
     "soalnya endpoint candle/OHLC crypto di Finnhub sudah dikunci ke plan berbayar. Grafik "
     "pergerakan harga tetap memakai **TradingView Widget** resmi (narik data sendiri dari "
     "TradingView, bisa saja sedikit berbeda dengan harga quote di atasnya).",
@@ -296,7 +306,7 @@ st.markdown(
 # ============================================================
 # 2. Daftar Kategori Saham AS & Crypto (hardcoded — dipakai buat quick-pick
 #    di sidebar; pencarian tambahan di luar daftar ini dilakukan live via
-#    endpoint /search Finnhub buat saham, dan exchangeInfo Binance buat crypto).
+#    endpoint /search Finnhub buat saham, dan /search CoinGecko buat crypto).
 # ============================================================
 KATEGORI_SAHAM_AS = {
     "Teknologi": {
@@ -330,24 +340,58 @@ KATEGORI_SAHAM_AS = {
 }
 
 KATEGORI_CRYPTO_RAW = {
-    "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana", "XRP": "XRP",
-    "ADA": "Cardano", "DOGE": "Dogecoin", "DOT": "Polkadot",
-    "LTC": "Litecoin", "AVAX": "Avalanche", "LINK": "Chainlink",
+    "BTC": {"id": "bitcoin", "nama": "Bitcoin", "tv": "BINANCE:BTCUSDT"},
+    "ETH": {"id": "ethereum", "nama": "Ethereum", "tv": "BINANCE:ETHUSDT"},
+    "SOL": {"id": "solana", "nama": "Solana", "tv": "BINANCE:SOLUSDT"},
+    "XRP": {"id": "ripple", "nama": "XRP", "tv": "BINANCE:XRPUSDT"},
+    "ADA": {"id": "cardano", "nama": "Cardano", "tv": "BINANCE:ADAUSDT"},
+    "DOGE": {"id": "dogecoin", "nama": "Dogecoin", "tv": "BINANCE:DOGEUSDT"},
+    "DOT": {"id": "polkadot", "nama": "Polkadot", "tv": "BINANCE:DOTUSDT"},
+    "LTC": {"id": "litecoin", "nama": "Litecoin", "tv": "BINANCE:LTCUSDT"},
+    "AVAX": {"id": "avalanche-2", "nama": "Avalanche", "tv": "BINANCE:AVAXUSDT"},
+    "LINK": {"id": "chainlink", "nama": "Chainlink", "tv": "BINANCE:LINKUSDT"},
 }
-KATEGORI_CRYPTO = {normalisasi_kode_crypto(k): v for k, v in KATEGORI_CRYPTO_RAW.items()}
+# kode internal -> "CG:<coingecko_id>"; label tampil di Pilih dari Kategori tetap pakai ticker biasa
+KATEGORI_CRYPTO = {f"CG:{v['id']}": v["nama"] for v in KATEGORI_CRYPTO_RAW.values()}
+_TICKER_KE_ID_STATIS = {t: v["id"] for t, v in KATEGORI_CRYPTO_RAW.items()}
+_ID_KE_TV_STATIS = {v["id"]: v["tv"] for v in KATEGORI_CRYPTO_RAW.values()}
 
 KATEGORI_SAHAM = dict(KATEGORI_SAHAM_AS)
 KATEGORI_SAHAM["Crypto"] = KATEGORI_CRYPTO
 
 
-def tebak_simbol_tradingview(kode: str, exchange_finnhub: str = None) -> str:
-    """Tebakan default simbol TradingView. Untuk crypto formatnya nyaris
-    identik sama simbol Finnhub (mis. BINANCE:BTCUSDT), jadi tinggal dipakai
-    lagi. Untuk saham, exchange dari profil Finnhub ditebak ke kode exchange
-    TradingView — bukan jaminan selalu tepat, makanya selalu disediakan
-    kotak override manual di panel chart."""
+def normalisasi_kode_crypto(kode_atau_kata_kunci: str) -> str:
+    """Ubah input user (ticker seperti 'BTC', atau nama seperti 'bitcoin')
+    jadi format internal 'CG:<coingecko_id>'. Ticker yang ada di daftar
+    kategori statis di-resolve langsung tanpa panggil API; selain itu,
+    dicari lewat endpoint /search CoinGecko (best-effort, ambil hasil
+    teratas)."""
+    k = kode_atau_kata_kunci.strip()
+    if k.upper().startswith("CG:"):
+        return f"CG:{k.split(':', 1)[1]}"
+    if k.upper() in _TICKER_KE_ID_STATIS:
+        return f"CG:{_TICKER_KE_ID_STATIS[k.upper()]}"
+    data, err = _req_coingecko("/search", {"query": k})
+    if not err and data and data.get("coins"):
+        return f"CG:{data['coins'][0]['id']}"
+    # fallback kalau pencarian gagal/gak ketemu: anggap saja input = coingecko id
+    return f"CG:{k.lower().replace(' ', '-')}"
+
+
+def tebak_simbol_tradingview(kode: str, exchange_finnhub: str = None, simbol_asli: str = None) -> str:
+    """Tebakan default simbol TradingView. Untuk crypto: kalau id-nya ada
+    di daftar kategori statis, dipetakan langsung ke pasangan Binance yang
+    dikenal; kalau simbol asli coin-nya diketahui (dari CoinGecko), ditebak
+    'BINANCE:{SIMBOL}USDT'. Untuk saham, exchange dari profil Finnhub
+    ditebak ke kode exchange TradingView — bukan jaminan selalu tepat,
+    makanya selalu disediakan kotak override manual di panel chart."""
     if is_crypto(kode):
-        return kode
+        cg_id = kode.split(":", 1)[1]
+        if cg_id in _ID_KE_TV_STATIS:
+            return _ID_KE_TV_STATIS[cg_id]
+        if simbol_asli:
+            return f"BINANCE:{simbol_asli.upper()}USDT"
+        return f"BINANCE:{cg_id.upper()}USDT"
     ex = (exchange_finnhub or "").upper()
     if "NASDAQ" in ex:
         exch_tv = "NASDAQ"
@@ -398,61 +442,22 @@ def cari_ticker_saham(kata_kunci: str):
     return hasil, None
 
 
-def _req_binance(path: str, params: dict = None, timeout: int = 15):
-    """Wrapper request ke Binance Public API — gak perlu API key sama
-    sekali buat data harga/market publik. Mengembalikan (json_data, error_msg)."""
-    url = f"{BINANCE_BASE_URL}{path}"
-    try:
-        resp = requests.get(
-            url, params=params or {}, timeout=timeout,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; StreamlitApp/1.0)"},
-        )
-    except requests.exceptions.RequestException as e:
-        return None, f"Gagal konek ke Binance: {e}"
-    if resp.status_code == 451:
-        return None, (
-            "Binance menolak request ini dengan status 451 (Unavailable For Legal Reasons) — "
-            "ini biasanya karena IP server tempat app di-deploy kena blokir region/datacenter "
-            "Binance (sering kejadian di hosting cloud seperti Streamlit Community Cloud yang "
-            "IP-nya di AS). Coba jalankan app-nya secara lokal untuk memastikan."
-        )
-    if resp.status_code == 429:
-        return None, "Rate limit Binance tercapai. Tunggu sebentar lalu coba lagi."
-    if resp.status_code != 200:
-        return None, f"Binance mengembalikan status {resp.status_code}: {resp.text[:200]}"
-    try:
-        return resp.json(), None
-    except Exception:
-        return None, "Respons Binance tidak bisa dibaca (bukan JSON valid)."
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
-def ambil_semua_simbol_crypto():
-    data, err = _req_binance("/api/v3/exchangeInfo")
-    if err or not data:
-        return [], err
-    hasil = [
-        s for s in data.get("symbols", [])
-        if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"
-    ]
-    return hasil, None
-
-
+@st.cache_data(ttl=1800, show_spinner=False)
 def cari_ticker_crypto(kata_kunci: str):
     if not kata_kunci or len(kata_kunci.strip()) < 2:
         return [], None
-    semua, err = ambil_semua_simbol_crypto()
+    data, err = _req_coingecko("/search", {"query": kata_kunci.strip()})
     if err:
         return [], err
-    kk = kata_kunci.strip().upper()
     hasil = []
-    for s in semua:
-        simbol = s.get("symbol", "")
-        aset_dasar = s.get("baseAsset", "")
-        if kk in simbol.upper() or kk in aset_dasar.upper():
-            hasil.append((f"BINANCE:{simbol}", aset_dasar))
-        if len(hasil) >= 15:
-            break
+    for c in (data.get("coins") or [])[:15]:
+        cid = c.get("id", "")
+        simbol = c.get("symbol", "")
+        nama = c.get("name", "")
+        if cid:
+            hasil.append((f"CG:{cid}", simbol, nama))
     return hasil, None
 
 
@@ -560,13 +565,14 @@ with st.sidebar.expander("Cari Crypto Lainnya"):
         if err_crypto:
             st.caption(f"Gagal mencari: {err_crypto}")
         elif hasil_crypto:
-            label_hasil_c = [f"{s}  —  {n}" for s, n in hasil_crypto]
+            label_hasil_c = [f"{s.upper()}  —  {n}" for _, s, n in hasil_crypto]
             pilihan_crypto = st.selectbox("Hasil pencarian", label_hasil_c, key="pilihan_crypto_finnhub")
             if st.button("Tambahkan hasil pencarian", key="btn_tambah_crypto_finnhub"):
-                tambah_saham(pilihan_crypto.split("  —  ")[0])
+                idx_terpilih = label_hasil_c.index(pilihan_crypto)
+                tambah_saham(hasil_crypto[idx_terpilih][0])
                 st.rerun()
         else:
-            st.caption("Tidak ada hasil. Coba kata kunci lain (pencarian crypto dibatasi pasangan .../USDT di Binance, data publik gratis tanpa API key).")
+            st.caption("Tidak ada hasil. Coba kata kunci lain (pencarian pakai CoinGecko, gratis tanpa API key).")
 
 with st.sidebar.expander("Tambah Manual (ketik kode ticker)"):
     tipe_manual = st.radio("Tipe", ["Saham", "Crypto"], horizontal=True, key="tipe_manual")
@@ -749,58 +755,68 @@ with col_main:
 
 
     @st.cache_data(ttl=900, show_spinner=False)
-    def ambil_ringkasan_crypto(kode: str):
-        """Ambil harga terkini + perubahan 24 jam dari Binance ticker/24hr,
-        dan 52W high/low dari Binance klines harian (~370 hari). kode
-        formatnya 'BINANCE:BTCUSDT' — prefix exchange dibuang dulu sebelum
-        dipakai manggil Binance (Binance gak butuh prefix itu).
-        Return (dict_atau_None, pesan_error_atau_None) — errornya selalu
-        dikembalikan biar gampang didiagnosis kalau gagal (mis. request
-        dari IP cloud/datacenter suka diblokir Binance dengan status 451)."""
-        pasangan = kode.split(":")[-1]
-
-        ticker, err1 = _req_binance("/api/v3/ticker/24hr", {"symbol": pasangan})
-        if err1:
-            return None, f"ticker/24hr: {err1}"
-        if not ticker or "lastPrice" not in ticker:
-            return None, f"ticker/24hr: respons gak sesuai dugaan — {ticker}"
-
-        klines, err2 = _req_binance(
-            "/api/v3/klines", {"symbol": pasangan, "interval": "1d", "limit": 370}
+    def ambil_harga_crypto_batch(daftar_id: tuple):
+        """Ambil harga terkini + perubahan 24 jam untuk BANYAK coin sekaligus
+        dalam satu request ke /coins/markets (CoinGecko). Return
+        (dict id->{...}, pesan_error_atau_None)."""
+        if not daftar_id:
+            return {}, None
+        data, err = _req_coingecko(
+            "/coins/markets",
+            {
+                "vs_currency": "usd",
+                "ids": ",".join(daftar_id),
+                "price_change_percentage": "24h",
+            },
         )
+        if err:
+            return {}, err
+        hasil = {}
+        for c in data or []:
+            cid = c.get("id")
+            harga = c.get("current_price")
+            pct = c.get("price_change_percentage_24h")
+            if cid is None or harga is None:
+                continue
+            harga_kemarin = harga / (1 + pct / 100) if pct not in (None, -100) else None
+            hasil[cid] = {"harga": harga, "harga_kemarin": harga_kemarin, "simbol": c.get("symbol", "")}
+        return hasil, None
 
-        harga = float(ticker.get("lastPrice", 0)) or None
-        harga_kemarin = float(ticker.get("prevClosePrice", 0)) or None
-        if not harga:
-            return None, f"harga dari ticker/24hr kosong/nol — respons: {ticker}"
 
-        tinggi_52w = rendah_52w = None
-        if not err2 and klines:
-            tinggi_52w = max(float(k[2]) for k in klines)
-            rendah_52w = min(float(k[3]) for k in klines)
-
-        return {
-            "harga": harga,
-            "harga_kemarin": harga_kemarin,
-            "tinggi_52w": tinggi_52w,
-            "rendah_52w": rendah_52w,
-        }, None
+    @st.cache_data(ttl=6 * 3600, show_spinner=False)
+    def ambil_52w_crypto(coin_id: str):
+        """Ambil 52W high/low dari histori harga ~365 hari (dipanggil satu
+        coin per request — CoinGecko gak nyediain versi batch buat ini)."""
+        data, err = _req_coingecko(
+            f"/coins/{coin_id}/market_chart", {"vs_currency": "usd", "days": 365}
+        )
+        if err or not data or not data.get("prices"):
+            return None, None
+        harga_list = [p[1] for p in data["prices"]]
+        return max(harga_list), min(harga_list)
 
 
     def bangun_ringkasan(daftar_kode: list) -> dict:
         data_semua = {}
         error_detail = {}
+
+        daftar_crypto_id = tuple(k.split(":", 1)[1] for k in daftar_kode if is_crypto(k))
+        harga_crypto, err_batch = ambil_harga_crypto_batch(daftar_crypto_id)
+
         for kode in daftar_kode:
             if is_crypto(kode):
-                ring, err = ambil_ringkasan_crypto(kode)
+                cid = kode.split(":", 1)[1]
+                ring = harga_crypto.get(cid)
                 if not ring:
-                    error_detail[kode] = err or "tidak diketahui"
+                    error_detail[kode] = err_batch or f"coin id '{cid}' tidak ditemukan di respons CoinGecko"
                     continue
-                nama = KATEGORI_CRYPTO.get(kode, kode.split(":")[-1].replace("USDT", ""))
+                tinggi_52w, rendah_52w = ambil_52w_crypto(cid)
+                nama = KATEGORI_CRYPTO.get(kode, ring.get("simbol", cid).upper())
                 data_semua[kode] = {
-                    "Nama": nama, "Ticker": kode, "Tipe": "Crypto", "Mata Uang": "USDT",
+                    "Nama": nama, "Ticker": kode, "Tipe": "Crypto", "Mata Uang": "USD",
                     "Harga": ring["harga"], "Harga Kemarin": ring["harga_kemarin"],
-                    "Exchange": None, "Simbol TradingView": tebak_simbol_tradingview(kode),
+                    "Exchange": None,
+                    "Simbol TradingView": tebak_simbol_tradingview(kode, simbol_asli=ring.get("simbol")),
                     "Market Cap": None,
                     "PER (Trailing)": None, "PER (Forward)": None, "PBV": None, "PEG Ratio": None,
                     "Price/Sales": None, "EV/EBITDA": None, "EV/Revenue": None,
@@ -811,8 +827,8 @@ with col_main:
                     "Revenue Growth (%)": None, "Earnings Growth (%)": None,
                     "Dividend Yield (%)": None, "Payout Ratio (%)": None,
                     "Beta": None,
-                    "52W High": fmt(ring["tinggi_52w"], 4 if (ring["tinggi_52w"] or 0) < 1 else 2),
-                    "52W Low": fmt(ring["rendah_52w"], 4 if (ring["rendah_52w"] or 0) < 1 else 2),
+                    "52W High": fmt(tinggi_52w, 4 if (tinggi_52w or 0) < 1 else 2),
+                    "52W Low": fmt(rendah_52w, 4 if (rendah_52w or 0) < 1 else 2),
                 }
                 time.sleep(0.1)
                 continue
@@ -925,13 +941,14 @@ with col_main:
             st.caption(f"**{k}** — {error_detail.get(k, 'tidak diketahui')}")
         st.caption(
             "Cek lagi API Key Finnhub kamu, atau pastikan kode ticker/pair-nya benar "
-            "(saham AS pakai kode biasa mis. AAPL, crypto pakai format EXCHANGE:PAIR mis. BINANCE:BTCUSDT)."
+            "(saham AS pakai kode biasa mis. AAPL, crypto tinggal ketik nama/tickernya mis. BTC lewat pencarian)."
         )
         if st.button("Coba lagi", key="btn_coba_lagi_gagal"):
             ambil_quote_saham.clear()
             ambil_profile_saham.clear()
             ambil_metric_saham.clear()
-            ambil_ringkasan_crypto.clear()
+            ambil_harga_crypto_batch.clear()
+            ambil_52w_crypto.clear()
             st.rerun()
 
     if len(data_semua) < 1:
@@ -1112,7 +1129,8 @@ with col_main:
             ambil_quote_saham.clear()
             ambil_profile_saham.clear()
             ambil_metric_saham.clear()
-            ambil_ringkasan_crypto.clear()
+            ambil_harga_crypto_batch.clear()
+            ambil_52w_crypto.clear()
             st.rerun()
 
     if not tickers_dipilih:
@@ -1325,7 +1343,7 @@ def simpan_memori_ai(riwayat: list, catatan_preferensi: str):
 
 SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham AS & crypto di dalam sebuah aplikasi pembanding. Tugasmu membantu pengguna memahami data rasio keuangan dan harga yang sedang mereka bandingkan.
 
-Data saham/crypto yang sedang dibandingkan pengguna saat ini (sumber data: Finnhub API untuk saham, Binance Public API untuk crypto):
+Data saham/crypto yang sedang dibandingkan pengguna saat ini (sumber data: Finnhub API untuk saham, CoinGecko Public API untuk crypto):
 {konteks}
 {blok_preferensi}
 {blok_dokumen}
