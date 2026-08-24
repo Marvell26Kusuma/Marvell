@@ -5,7 +5,6 @@ import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 
 try:
@@ -42,6 +41,39 @@ def dapatkan_sesi_yf():
 
 
 # ============================================================
+# 0b. Penyimpanan daftar saham yang dibandingkan — KHUSUS halaman ini
+#    (page 1 / IDX + global via yfinance). Disimpan ke file JSON terpisah
+#    dari page lain (mis. page saham AS & crypto via Finnhub) supaya
+#    daftarnya gak kecampur — masing-masing "pages" punya file
+#    penyimpanannya sendiri berdasarkan nama file script ini sendiri.
+# ============================================================
+PATH_DAFTAR_TERSIMPAN = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "daftar_tersimpan_idx.json"
+)
+DAFTAR_SAHAM_DEFAULT = ["BBCA.JK", "BBRI.JK"]
+
+
+def muat_daftar_tersimpan() -> list:
+    if os.path.exists(PATH_DAFTAR_TERSIMPAN):
+        try:
+            with open(PATH_DAFTAR_TERSIMPAN, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and data:
+                    return data
+        except Exception:
+            pass
+    return list(DAFTAR_SAHAM_DEFAULT)
+
+
+def simpan_daftar_tersimpan(daftar: list):
+    try:
+        with open(PATH_DAFTAR_TERSIMPAN, "w", encoding="utf-8") as f:
+            json.dump(daftar, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass  # gagal simpan bukan hal fatal, daftar tetap jalan normal di sesi ini
+
+
+# ============================================================
 # 1. Konfigurasi Tampilan Halaman
 # ============================================================
 st.set_page_config(page_title="Pembanding Saham", layout="wide", page_icon="chart_with_upwards_trend")
@@ -49,7 +81,7 @@ st.title("Pembanding Laporan Keuangan Saham")
 st.caption("Bandingkan rasio keuangan beberapa emiten sekaligus — cari dari 900+ saham IDX, pilih dari kategori sektor, dan tampilkan grafik per rasio.")
 
 # ============================================================
-# 1b. Tampilan & Tema — kustomisasi warna latar website + warna candlestick
+# 1b. Tampilan & Tema — kustomisasi warna latar website + tema chart TradingView
 # ============================================================
 TEMA_PRESET = {
     "Gelap Klasik": {"app_bg": "#0e1117", "sidebar_bg": "#131722", "teks": "#e6e6e6"},
@@ -72,10 +104,7 @@ with st.sidebar.expander("Tampilan & Tema", expanded=False):
         app_bg, sidebar_bg, teks_warna = preset["app_bg"], preset["sidebar_bg"], preset["teks"]
 
     st.markdown("---")
-    st.caption("Warna candlestick di chart pergerakan harga:")
-    warna_candle_naik = st.color_picker("Candle Naik", "#26a69a", key="warna_candle_naik")
-    warna_candle_turun = st.color_picker("Candle Turun", "#ef5350", key="warna_candle_turun")
-    warna_bg_chart = st.color_picker("Latar belakang chart", "#131722", key="warna_bg_chart")
+    tema_chart_tv = st.radio("Tema grafik TradingView", ["dark", "light"], horizontal=True, key="tema_chart_tv")
 
 st.markdown(
     f"""
@@ -86,20 +115,16 @@ st.markdown(
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }}
 
-    /* Cegah scroll horizontal — panel Asisten AI yang digeser ke luar layar
-       (translateX) tetap dihitung lebarnya oleh browser kalau ini tidak dikunci.
-       Ditarget ke beberapa kemungkinan container scroll Streamlit sekaligus,
-       karena versi Streamlit berbeda-beda punya elemen scroll utama yang beda. */
     html {{
         overflow-x: hidden !important;
         max-width: 100vw !important;
         background-color: {app_bg} !important;
-        color-scheme: dark; /* cegah Chrome/browser auto-invert warna halaman yang sudah gelap */
+        color-scheme: dark;
     }}
     body {{
         overflow-x: hidden !important;
         background-color: {app_bg} !important;
-        overscroll-behavior-y: none; /* cegah flash putih pas rubber-band scroll di iOS/Android */
+        overscroll-behavior-y: none;
     }}
     .stApp,
     [data-testid="stAppViewContainer"],
@@ -126,17 +151,14 @@ st.markdown(
         color: {teks_warna};
     }}
 
-    /* Sembunyikan chrome bawaan Streamlit supaya lebih clean */
     #MainMenu, footer, [data-testid="stDecoration"] {{
         visibility: hidden;
         height: 0;
     }}
 
-    /* Judul & heading — lebih tegas, spasi lebih rapi */
     h1 {{ font-weight: 700; letter-spacing: -0.02em; }}
     h2, h3 {{ font-weight: 600; letter-spacing: -0.01em; }}
 
-    /* Tombol — rounded, border tipis, background gelap konsisten (bukan putih bawaan) */
     .stButton > button, .stDownloadButton > button {{
         background-color: rgba(255,255,255,0.04);
         color: {teks_warna};
@@ -154,7 +176,6 @@ st.markdown(
         color: rgba(255,255,255,0.35) !important;
     }}
 
-    /* Expander — background gelap (bawaannya putih kalau tidak di-set) */
     [data-testid="stExpander"] {{
         background-color: rgba(255,255,255,0.02);
         border: 1px solid rgba(128,128,128,0.15);
@@ -164,7 +185,6 @@ st.markdown(
         background-color: transparent !important;
     }}
 
-    /* Tabs — garis bawah lebih halus */
     [data-baseweb="tab-list"] {{
         gap: 4px;
     }}
@@ -172,7 +192,6 @@ st.markdown(
         border-radius: 8px 8px 0 0;
     }}
 
-    /* Input, selectbox, multiselect — background gelap konsisten (BaseWeb default-nya putih) */
     .stTextInput input,
     .stNumberInput input,
     .stDateInput input,
@@ -185,14 +204,10 @@ st.markdown(
         border-radius: 8px !important;
         border-color: rgba(128,128,128,0.25) !important;
     }}
-    /* "Chip" pilihan yang sudah dipilih di dalam multiselect */
     [data-baseweb="tag"] {{
         background-color: rgba(41,98,255,0.25) !important;
     }}
 
-    /* Menu dropdown/popover BaseWeb dirender di luar pohon DOM utama (portal ke
-       document.body), jadi harus ditarget terpisah supaya ikut gelap juga —
-       ini penyebab utama kotak putih nyala pas buka dropdown di HP. */
     [data-baseweb="popover"],
     [data-baseweb="menu"],
     ul[role="listbox"],
@@ -204,7 +219,6 @@ st.markdown(
         background-color: rgba(255,255,255,0.08) !important;
     }}
 
-    /* Metric — angka lebih tegas */
     [data-testid="stMetricValue"] {{
         font-weight: 700;
     }}
@@ -241,7 +255,7 @@ if df_idx.empty:
     st.warning(
         "File `daftar_saham_idx.csv` tidak ditemukan di folder yang sama dengan script ini. "
         "Fitur kategori sektor & pencarian lokal saham Indonesia tidak akan berfungsi penuh — "
-        "pastikan file CSV diletakkan satu folder dengan `pembanding_saham.py`."
+        "pastikan file CSV diletakkan satu folder dengan `pembanding_saham_idx.py`."
     )
 
 LABEL_SEMUA_SAHAM = (
@@ -268,22 +282,41 @@ urutan_final = urutan_prioritas + [k for k in ("Lainnya", "Saham AS (Global)") i
 KATEGORI_SAHAM = {k: KATEGORI_SAHAM[k] for k in urutan_final}
 
 
+def tebak_simbol_tradingview(ticker: str, exchange_yf: str = None) -> str:
+    """Tebakan default simbol TradingView. Saham IDX (.JK) dipetakan ke
+    exchange 'IDX:', saham global ditebak dari kode exchange Yahoo Finance
+    (info['exchange']) — bukan jaminan selalu tepat, makanya selalu
+    disediakan kotak override manual di panel chart."""
+    if ticker.upper().endswith(".JK"):
+        return f"IDX:{ticker[:-3].upper()}"
+    alias_exchange_yf = {
+        "NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ",
+        "NYQ": "NYSE", "ASE": "AMEX", "PCX": "AMEX",
+    }
+    exch_tv = alias_exchange_yf.get((exchange_yf or "").upper(), "NASDAQ")
+    return f"{exch_tv}:{ticker.upper()}"
+
+
 # ============================================================
-# 3. State: daftar saham yang sedang dibandingkan
+# 3. State: daftar saham yang sedang dibandingkan (dimuat dari file
+#    tersimpan khusus halaman ini, biar nyambung terus antar sesi/reload
+#    tanpa kecampur sama daftar di halaman lain).
 # ============================================================
 if "daftar_saham" not in st.session_state:
-    st.session_state.daftar_saham = ["BBCA.JK", "BBRI.JK"]
+    st.session_state.daftar_saham = muat_daftar_tersimpan()
 
 
 def tambah_saham(kode: str):
     kode = kode.strip().upper()
     if kode and kode not in st.session_state.daftar_saham:
         st.session_state.daftar_saham.append(kode)
+        simpan_daftar_tersimpan(st.session_state.daftar_saham)
 
 
 def hapus_saham(kode: str):
     if kode in st.session_state.daftar_saham:
         st.session_state.daftar_saham.remove(kode)
+        simpan_daftar_tersimpan(st.session_state.daftar_saham)
 
 
 # ============================================================
@@ -426,6 +459,7 @@ with st.sidebar.expander("Tambah Manual (ketik kode ticker)"):
         st.rerun()
 
 st.sidebar.markdown("### Saham yang Dibandingkan")
+st.sidebar.caption("Daftar ini otomatis tersimpan (khusus halaman ini) dan tetap ada walau app di-reload.")
 if not st.session_state.daftar_saham:
     st.sidebar.info("Belum ada saham. Tambahkan minimal 2 saham di atas.")
 else:
@@ -438,6 +472,7 @@ else:
 
     if st.sidebar.button("Clear All", key="btn_clear_all", use_container_width=True):
         st.session_state.daftar_saham = []
+        simpan_daftar_tersimpan([])
         st.rerun()
 
 daftar_saham = st.session_state.daftar_saham
@@ -453,32 +488,21 @@ PADDING_KANAN_AKTIF = LEBAR_PANEL_AI + 24 if tampilkan_panel_ai else 0
 st.markdown(
     f"""
     <style>
-    /* Sisakan ruang di kanan supaya konten utama tidak ketutup panel AI yang fixed.
-       Selalu di-render (bukan kondisional) supaya transition-nya jalan mulus
-       saat panel dibuka/ditutup, bukan lompat instan. */
     [data-testid="stMainBlockContainer"], .main .block-container {{
         padding-right: {PADDING_KANAN_AKTIF}px !important;
         transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
     }}
 
-    /* Cegah elemen manapun "tembus" keluar tepi layar HP akibat padding/border
-       yang menambah lebar di luar perhitungan width normal. */
     *, *::before, *::after {{
         box-sizing: border-box;
     }}
 
-    /* Di layar sempit (HP), panel AI jadi overlay penuh (bukan sisip di
-       samping), jadi konten utama TIDAK perlu diberi ruang kosong di
-       kanan — kalau tetap dipaksa, layar HP jadi kepencet sempit sekali. */
     @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
             padding-right: 1rem !important;
             padding-left: 1rem !important;
         }}
 
-        /* Streamlit otomatis nge-stack st.columns() ke bawah kalau layar
-           sempit — di sini dipaksa TETAP sejajar (nowrap) dan boleh
-           discroll ke samping, bukan ditumpuk ke bawah semua. */
         [data-testid="stHorizontalBlock"] {{
             flex-wrap: nowrap !important;
             overflow-x: auto !important;
@@ -492,8 +516,6 @@ st.markdown(
             min-width: 200px;
         }}
 
-        /* Elemen lebar (dataframe, chart, gambar) dikunci max 100% lebar
-           layar supaya tidak melebar keluar (tembus tepi) di HP. */
         [data-testid="stDataFrame"],
         [data-testid="stImage"],
         iframe,
@@ -505,7 +527,6 @@ st.markdown(
         h2 {{ font-size: 1.25rem !important; }}
     }}
 
-    /* Scroll sentuhan yang lebih halus di semua elemen yang bisa digeser */
     .scroll-container, [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {{
         -webkit-overflow-scrolling: touch;
         scroll-behavior: smooth;
@@ -515,12 +536,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Backdrop khusus HP: kalau panel AI kebuka di layar sempit, area di luar
-# panel jadi bisa diklik/ditap buat nutup panel-nya lagi (klik di mana pun
-# selain panel = otomatis uncheck checkbox "Tampilkan Asisten AI" di sidebar).
-# Pakai components.html (bukan st.markdown) karena butuh <script> yang bisa
-# benar-benar dieksekusi browser, lalu dari situ "menjangkau" dokumen utama
-# lewat window.parent supaya bisa membuat backdrop & mengklik checkbox aslinya.
 components.html(
     f"""
     <script>
@@ -557,7 +572,6 @@ col_main = st.container()
 
 with col_main:
 
-
     # ============================================================
     # 6. Fungsi Mengambil & Menghitung Rasio via API Yahoo Finance
     # ============================================================
@@ -580,6 +594,7 @@ with col_main:
 
             der_raw = info.get("debtToEquity")
             der = (der_raw / 100) if der_raw else None
+            exchange_yf = info.get("exchange", "")
 
             data = {
                 "Nama": info.get("shortName", ticker),
@@ -587,6 +602,8 @@ with col_main:
                 "Mata Uang": info.get("currency", ""),
                 "Harga": fmt(info.get("currentPrice") or info.get("regularMarketPrice"), 0),
                 "Market Cap": info.get("marketCap"),
+                "Exchange": exchange_yf,
+                "Simbol TradingView": tebak_simbol_tradingview(ticker, exchange_yf),
 
                 "PER (Trailing)": fmt(info.get("trailingPE")),
                 "PER (Forward)": fmt(info.get("forwardPE")),
@@ -623,267 +640,38 @@ with col_main:
             return None
 
 
-    TIMEFRAME_HARGA = {
-        "Harian": {"interval": "1d", "resample": None},
-        "Mingguan": {"interval": "1wk", "resample": None},
-        "Bulanan": {"interval": "1mo", "resample": None},
-        "Tahunan": {"interval": "3mo", "resample": "YE"},  # candle kuartalan diagregasi jadi tahunan
-    }
-
-
-    @st.cache_data(ttl=600, show_spinner=False)
-    def ambil_data_harga(ticker: str, periode: str, interval: str, resample):
-        try:
-            data = yf.Ticker(ticker, session=dapatkan_sesi_yf()).history(period=periode, interval=interval)
-            if data is None or data.empty:
-                return None
-            data = data[["Open", "High", "Low", "Close", "Volume"]].dropna()
-
-            if resample:
-                data = data.resample(resample).agg({
-                    "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum",
-                }).dropna()
-
-            data = data.reset_index()
-            kolom_waktu = data.columns[0]
-            data = data.rename(columns={kolom_waktu: "Waktu"})
-            return data
-        except Exception:
-            return None
-
-
-    def render_tradingview_chart(
-        df: pd.DataFrame, ticker: str, tinggi: int = 560, chart_key: str = "tvchart",
-        warna_naik: str = "#26a69a", warna_turun: str = "#ef5350", warna_bg_chart: str = "#131722",
-    ):
-        """Render candlestick + volume pakai library asli TradingView: Lightweight Charts
-        (open-source, MIT license, dipakai TradingView sendiri untuk versi gratisnya).
-        Ini memberi interaksi native TradingView: scroll = zoom, drag = pan, drag di
-        sumbu harga/waktu = rescale, crosshair, dsb — tanpa perlu diakali lewat Plotly.
-        """
-        df_js = df.copy()
-        df_js["time"] = pd.to_datetime(df_js["Waktu"]).dt.strftime("%Y-%m-%d")
-        df_js["PctChange"] = df_js["Close"].pct_change() * 100  # naik/turun vs candle sebelumnya
-
-        data_candle = df_js[["time", "Open", "High", "Low", "Close", "PctChange"]].rename(
-            columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "PctChange": "pctChange"}
-        )
-        data_candle["pctChange"] = data_candle["pctChange"].where(data_candle["pctChange"].notna(), None)
-        data_candle = data_candle.to_dict(orient="records")
-
-        data_volume = [
-            {
-                "time": row["time"],
-                "value": float(row["Volume"]),
-                "color": f"{warna_naik}80" if row["Close"] >= row["Open"] else f"{warna_turun}80",
-            }
-            for row in df_js[["time", "Open", "Close", "Volume"]].to_dict(orient="records")
-        ]
-
-        candle_json = json.dumps(data_candle)
-        volume_json = json.dumps(data_volume)
-        div_id = f"chart_{chart_key}"
-
+    def render_tradingview_widget(simbol_tv: str, tinggi: int = 550, chart_key: str = "tv", tema: str = "dark"):
+        """Render TradingView Advanced Real-Time Chart Widget resmi.
+        Widget ini narik data historis & real-time-nya sendiri dari
+        TradingView — TIDAK memakai data harga dari Yahoo Finance sama
+        sekali. Semua kontrol zoom, indikator teknikal, dan timeframe
+        sudah bawaan dari widget-nya sendiri."""
+        container_id = f"tradingview_{chart_key}"
         html = f"""
-        <div id="{div_id}" style="width:100%; height:{tinggi}px; background:{warna_bg_chart}; border-radius:8px; position:relative;">
-            <div id="{div_id}_legend" style="position:absolute; left:12px; top:8px; z-index:5;
-                 font-family:-apple-system,Segoe UI,Roboto,sans-serif; font-size:12.5px; color:#d1d4dc;
-                 background:rgba(19,23,34,0.72); padding:4px 10px; border-radius:6px; pointer-events:none;
-                 white-space:nowrap;"></div>
+        <div class="tradingview-widget-container" style="height:{tinggi}px;">
+            <div id="{container_id}" style="height:100%;"></div>
         </div>
-        <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-        <script>
-            (function() {{
-                const container = document.getElementById("{div_id}");
-                const legendEl = document.getElementById("{div_id}_legend");
-                const chart = LightweightCharts.createChart(container, {{
-                    width: container.clientWidth,
-                    height: {tinggi},
-                    layout: {{
-                        background: {{ type: "solid", color: "{warna_bg_chart}" }},
-                        textColor: "#d1d4dc",
-                    }},
-                    grid: {{
-                        vertLines: {{ color: "#2a2e39" }},
-                        horzLines: {{ color: "#2a2e39" }},
-                    }},
-                    crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
-                    rightPriceScale: {{ borderColor: "#2a2e39", scaleMargins: {{ top: 0.1, bottom: 0.25 }} }},
-                    timeScale: {{
-                        borderColor: "#2a2e39",
-                        timeVisible: false,
-                        rightOffset: 4,
-                        tickMarkFormatter: (time, tickMarkType, locale) => {{
-                            const bulanSingkat = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
-                            const d = new Date(time + "T00:00:00Z");
-                            switch (tickMarkType) {{
-                                case LightweightCharts.TickMarkType.Year:
-                                    return d.getUTCFullYear().toString();
-                                case LightweightCharts.TickMarkType.Month:
-                                    return bulanSingkat[d.getUTCMonth()];
-                                case LightweightCharts.TickMarkType.DayOfMonth:
-                                    return d.getUTCDate().toString();
-                                default:
-                                    return d.getUTCFullYear().toString();
-                            }}
-                        }},
-                    }},
-                    handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true }},
-                    handleScale: {{ axisPressedMouseMove: true, mouseWheel: true, pinch: true }},
-                }});
-
-                const candleData = {candle_json};
-                const pctChangeByTime = {{}};
-                candleData.forEach(function(bar) {{ pctChangeByTime[bar.time] = bar.pctChange; }});
-
-                const candleSeries = chart.addCandlestickSeries({{
-                    upColor: "{warna_naik}", downColor: "{warna_turun}",
-                    borderUpColor: "{warna_naik}", borderDownColor: "{warna_turun}",
-                    wickUpColor: "{warna_naik}", wickDownColor: "{warna_turun}",
-                }});
-                candleSeries.setData(candleData);
-
-                const volumeSeries = chart.addHistogramSeries({{
-                    priceFormat: {{ type: "volume" }},
-                    priceScaleId: "vol",
-                }});
-                volumeSeries.setData({volume_json});
-
-                // Skala volume dibuat overlay terpisah, hanya menempati ~18% bawah
-                // chart, dan label angkanya disembunyikan supaya tidak tabrakan
-                // dengan angka pada skala harga (kanan).
-                chart.priceScale("vol").applyOptions({{
-                    scaleMargins: {{ top: 0.82, bottom: 0 }},
-                    visible: false,
-                }});
-
-                chart.timeScale().fitContent();
-
-                // Legend OHLC: menampilkan Open/High/Low/Close + persentase naik/turun
-                // vs candle sebelumnya, mengikuti posisi kursor. Field custom (pctChange)
-                // dicari lewat lookup map karena Lightweight Charts membuang field di
-                // luar OHLC saat data dikembalikan lewat event crosshair.
-                function tampilkanLegend(bar, pct) {{
-                    if (!bar) {{ legendEl.innerHTML = ""; return; }}
-                    const naik = bar.close >= bar.open;
-                    const warna = naik ? "{warna_naik}" : "{warna_turun}";
-
-                    let htmlPersen = "";
-                    if (pct !== null && pct !== undefined) {{
-                        const naikVsSebelumnya = pct >= 0;
-                        const warnaPersen = naikVsSebelumnya ? "{warna_naik}" : "{warna_turun}";
-                        const panah = naikVsSebelumnya ? "▲" : "▼";
-                        htmlPersen = ' &nbsp; <span style="color:' + warnaPersen + '">' +
-                            panah + ' ' + Math.abs(pct).toFixed(2) + '%</span>';
-                    }}
-
-                    legendEl.innerHTML =
-                        '<b>{ticker}</b>' +
-                        ' &nbsp; O <span style="color:' + warna + '">' + bar.open.toFixed(2) + '</span>' +
-                        ' &nbsp; H <span style="color:' + warna + '">' + bar.high.toFixed(2) + '</span>' +
-                        ' &nbsp; L <span style="color:' + warna + '">' + bar.low.toFixed(2) + '</span>' +
-                        ' &nbsp; C <span style="color:' + warna + '">' + bar.close.toFixed(2) + '</span>' +
-                        htmlPersen;
-                }}
-                if (candleData.length > 0) {{
-                    const barTerakhir = candleData[candleData.length - 1];
-                    tampilkanLegend(barTerakhir, barTerakhir.pctChange);  // tampil default: candle terakhir
-                }}
-                chart.subscribeCrosshairMove(param => {{
-                    if (!param || !param.time || !param.seriesData || !param.seriesData.get(candleSeries)) {{
-                        if (candleData.length > 0) {{
-                            const barTerakhir = candleData[candleData.length - 1];
-                            tampilkanLegend(barTerakhir, barTerakhir.pctChange);
-                        }}
-                        return;
-                    }}
-                    const barHover = param.seriesData.get(candleSeries);
-                    tampilkanLegend(barHover, pctChangeByTime[param.time]);
-                }});
-
-                new ResizeObserver(entries => {{
-                    if (entries.length === 0 || entries[0].target !== container) return;
-                    const newWidth = entries[0].contentRect.width;
-                    chart.applyOptions({{ width: newWidth }});
-                }}).observe(container);
-
-                // ================================================================
-                // Menu klik-kanan ala TradingView: reset skala harga, reset skala
-                // waktu, toggle skala logaritmik, unduh chart sebagai gambar.
-                // ================================================================
-                const menu = document.createElement("div");
-                menu.style.cssText = "position:fixed; display:none; z-index:1000; background:#1e222d; " +
-                    "border:1px solid #2a2e39; border-radius:6px; padding:4px 0; " +
-                    "font-family:-apple-system,Segoe UI,Roboto,sans-serif; font-size:13px; color:#d1d4dc; " +
-                    "box-shadow:0 4px 14px rgba(0,0,0,0.45); min-width:210px;";
-                document.body.appendChild(menu);
-
-                function buatItemMenu(labelAwal) {{
-                    const item = document.createElement("div");
-                    item.textContent = labelAwal;
-                    item.style.cssText = "padding:8px 14px; cursor:pointer;";
-                    item.onmouseenter = () => item.style.background = "#2a2e39";
-                    item.onmouseleave = () => item.style.background = "transparent";
-                    menu.appendChild(item);
-                    return item;
-                }}
-                function buatPemisahMenu() {{
-                    const pemisah = document.createElement("div");
-                    pemisah.style.cssText = "height:1px; background:#2a2e39; margin:4px 0;";
-                    menu.appendChild(pemisah);
-                }}
-
-                buatItemMenu("Reset Skala Harga").onclick = () => {{
-                    chart.priceScale("right").applyOptions({{ autoScale: true }});
-                    menu.style.display = "none";
-                }};
-                buatItemMenu("Reset Skala Waktu").onclick = () => {{
-                    chart.timeScale().fitContent();
-                    menu.style.display = "none";
-                }};
-                buatItemMenu("Reset Tampilan (Semua)").onclick = () => {{
-                    chart.priceScale("right").applyOptions({{ autoScale: true }});
-                    chart.timeScale().fitContent();
-                    menu.style.display = "none";
-                }};
-
-                buatPemisahMenu();
-
-                let logScaleAktif = false;
-                const itemLog = buatItemMenu("Skala Logaritmik: Off");
-                itemLog.onclick = () => {{
-                    logScaleAktif = !logScaleAktif;
-                    chart.priceScale("right").applyOptions({{
-                        mode: logScaleAktif ? LightweightCharts.PriceScaleMode.Logarithmic : LightweightCharts.PriceScaleMode.Normal,
-                    }});
-                    itemLog.textContent = "Skala Logaritmik: " + (logScaleAktif ? "On" : "Off");
-                    menu.style.display = "none";
-                }};
-
-                buatPemisahMenu();
-
-                buatItemMenu("Unduh sebagai Gambar").onclick = () => {{
-                    const canvas = chart.takeScreenshot();
-                    const link = document.createElement("a");
-                    link.download = "{ticker}_chart.png";
-                    link.href = canvas.toDataURL();
-                    link.click();
-                    menu.style.display = "none";
-                }};
-
-                container.addEventListener("contextmenu", (e) => {{
-                    e.preventDefault();
-                    const batasKanan = window.innerWidth - 220;
-                    const batasBawah = window.innerHeight - 220;
-                    menu.style.left = Math.min(e.clientX, batasKanan) + "px";
-                    menu.style.top = Math.min(e.clientY, batasBawah) + "px";
-                    menu.style.display = "block";
-                }});
-                document.addEventListener("click", () => {{ menu.style.display = "none"; }});
-            }})();
+        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+        <script type="text/javascript">
+            new TradingView.widget({{
+                "autosize": false,
+                "width": "100%",
+                "height": {tinggi},
+                "symbol": "{simbol_tv}",
+                "interval": "D",
+                "timezone": "Etc/UTC",
+                "theme": "{tema}",
+                "style": "1",
+                "locale": "en",
+                "toolbar_bg": "#f1f3f6",
+                "enable_publishing": false,
+                "allow_symbol_change": true,
+                "hide_side_toolbar": false,
+                "container_id": "{container_id}"
+            }});
         </script>
         """
-        components.html(html, height=tinggi + 20, scrolling=False)
+        components.html(html, height=tinggi + 10, scrolling=False)
 
 
     # ============================================================
@@ -998,8 +786,6 @@ with col_main:
         per_val = d['PER (Trailing)'] if d['PER (Trailing)'] else 'N/A'
         pbv_val = d['PBV'] if d['PBV'] else 'N/A'
         roe_val = d['ROE (%)'] if d['ROE (%)'] else 'N/A'
-        # Dibuat sebagai satu baris tanpa indentasi/newline supaya tidak
-        # dianggap code block oleh parser Markdown Streamlit.
         return (
             '<div class="stock-card">'
             f'<h4>{d["Nama"]}</h4>'
@@ -1035,14 +821,19 @@ with col_main:
     st.markdown("---")
 
     # ============================================================
-    # 9b. Grafik Pergerakan Harga (data Yahoo Finance, delay ~15-20 menit)
+    # 9b. Grafik Pergerakan Harga (TradingView Widget)
     # ============================================================
-    st.subheader("Pergerakan Harga Saham")
-    st.caption("Data harga bersumber dari Yahoo Finance dan biasanya memiliki delay ±15-20 menit dari harga real-time bursa — bukan data streaming langsung.")
+    st.subheader("Pergerakan Harga (TradingView Widget)")
+    st.caption(
+        "Grafik ini adalah widget resmi TradingView yang narik data historis & real-time-nya "
+        "langsung dari TradingView — bukan dari Yahoo Finance. Tebakan simbol TradingView dibuat "
+        "otomatis (saham IDX → IDX:KODE, saham global ditebak dari exchange-nya); kalau grafiknya "
+        "kosong/salah emiten, edit kotak simbol di bawah chart-nya secara manual."
+    )
 
     if AUTOREFRESH_TERSEDIA:
-        st_autorefresh(interval=10 * 60 * 1000, key="autorefresh_harga")  # otomatis, tanpa perlu diklik
-        st.caption("Auto-refresh tiap 10 menit — aktif otomatis.")
+        st_autorefresh(interval=10 * 60 * 1000, key="autorefresh_harga")
+        st.caption("Auto-refresh data ringkasan tiap 10 menit — aktif otomatis.")
     else:
         st.caption("Auto-refresh butuh: `pip install streamlit-autorefresh`")
 
@@ -1058,90 +849,11 @@ with col_main:
         key="tickers_chart_terpilih",
     )
 
-    col_tf, col_refresh = st.columns([3, 1])
-    with col_tf:
-        timeframe_terpilih = st.radio(
-            "Timeframe candle",
-            list(TIMEFRAME_HARGA.keys()),
-            horizontal=True,
-            key="timeframe_terpilih",
-        )
-    konfig_tf = TIMEFRAME_HARGA[timeframe_terpilih]
+    col_refresh, _ = st.columns([1, 3])
     with col_refresh:
-        st.write("")
-        st.write("")
-        if st.button("Refresh Sekarang", key="btn_refresh_manual", use_container_width=True):
-            ambil_data_harga.clear()
+        if st.button("Refresh Data Ringkasan", key="btn_refresh_manual", use_container_width=True):
+            ambil_rasio_saham.clear()
             st.rerun()
-
-    OFFSET_PERUBAHAN = {
-        "Harian": pd.DateOffset(days=1),
-        "Mingguan": pd.DateOffset(weeks=1),
-        "Bulanan": pd.DateOffset(months=1),
-        "Tahunan": pd.DateOffset(years=1),
-    }
-    LABEL_PERUBAHAN = {
-        "Harian": "1 hari terakhir",
-        "Mingguan": "1 minggu terakhir",
-        "Bulanan": "1 bulan terakhir",
-        "Tahunan": "1 tahun terakhir",
-    }
-
-
-    def render_satu_panel_chart(ticker_chart: str, tinggi_chart: int):
-        periode = "max"
-        interval = konfig_tf["interval"]
-        resample = konfig_tf["resample"]
-
-        with st.spinner(f"Mengambil data harga {ticker_chart}..."):
-            data_harga = ambil_data_harga(ticker_chart, periode, interval, resample)
-
-        if data_harga is None or data_harga.empty or len(data_harga) <= 1:
-            st.warning(f"Data harga untuk **{ticker_chart}** pada timeframe **{timeframe_terpilih}** tidak tersedia.")
-            return
-
-        harga_akhir = data_harga["Close"].iloc[-1]
-        tanggal_terakhir = pd.to_datetime(data_harga["Waktu"].iloc[-1])
-        tanggal_acuan = tanggal_terakhir - OFFSET_PERUBAHAN[timeframe_terpilih]
-        data_sebelum_acuan = data_harga[pd.to_datetime(data_harga["Waktu"]) <= tanggal_acuan]
-        harga_awal = data_sebelum_acuan["Close"].iloc[-1] if not data_sebelum_acuan.empty else data_harga["Close"].iloc[0]
-        perubahan = harga_akhir - harga_awal
-        persen = (perubahan / harga_awal * 100) if harga_awal else 0
-
-        naik = perubahan >= 0
-        warna_perubahan = warna_candle_naik if naik else warna_candle_turun
-        tanda = "+" if naik else ""
-        nama_perusahaan = data_semua.get(ticker_chart, {}).get("Nama", ticker_chart)
-        mata_uang = data_semua.get(ticker_chart, {}).get("Mata Uang", "")
-
-        st.markdown(
-            f"""
-            <div style="margin-bottom:6px;">
-                <div style="font-size:24px; font-weight:700; letter-spacing:-0.01em; line-height:1.2;">
-                    {nama_perusahaan}
-                    <span style="font-size:15px; font-weight:500; color:#8a8f99;">({ticker_chart})</span>
-                </div>
-                <div style="display:flex; align-items:baseline; gap:12px; margin-top:4px;">
-                    <span style="font-size:38px; font-weight:800; letter-spacing:-0.02em;">
-                        {mata_uang} {harga_akhir:,.2f}
-                    </span>
-                    <span style="font-size:17px; font-weight:600; color:{warna_perubahan};">
-                        {tanda}{perubahan:,.2f} ({tanda}{persen:.2f}%)
-                    </span>
-                </div>
-                <div style="font-size:12.5px; color:#8a8f99; margin-top:2px;">
-                    {LABEL_PERUBAHAN[timeframe_terpilih]}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        render_tradingview_chart(
-            data_harga, ticker_chart, tinggi=tinggi_chart, chart_key=f"{ticker_chart}_{timeframe_terpilih}",
-            warna_naik=warna_candle_naik, warna_turun=warna_candle_turun, warna_bg_chart=warna_bg_chart,
-        )
-
 
     if not tickers_dipilih:
         st.info("Pilih atau cari saham di atas untuk melihat grafik pergerakan harganya.")
@@ -1152,15 +864,22 @@ with col_main:
             kolom = st.columns(len(baris_ticker)) if len(baris_ticker) > 1 else [st.container()]
             for kol, tk in zip(kolom, baris_ticker):
                 with kol:
-                    render_satu_panel_chart(tk, tinggi_per_chart)
+                    d = data_semua.get(tk, {})
+                    st.markdown(f"**{d.get('Nama', tk)}** ({tk})")
+                    key_override = f"simbol_tv_override_{tk}"
+                    default_simbol = d.get("Simbol TradingView", tebak_simbol_tradingview(tk))
+                    simbol_tv = st.text_input(
+                        "Simbol TradingView", value=default_simbol, key=key_override,
+                        help="Format: EXCHANGE:SIMBOL, contoh IDX:BBCA atau NASDAQ:AAPL.",
+                    )
+                    render_tradingview_widget(
+                        simbol_tv, tinggi=tinggi_per_chart,
+                        chart_key=f"{tk.replace('.', '_')}", tema=tema_chart_tv,
+                    )
 
         st.caption(
-            "**Scroll** = zoom in/out. **Drag di area candle** = geser data. "
-            "**Drag di sumbu harga (kanan)** = perbesar/perkecil skala harga. "
-            "**Drag di sumbu tanggal (bawah)** = perbesar/perkecil skala waktu. "
-            "**Klik kanan di chart** untuk menu reset skala harga/waktu, skala logaritmik, dan unduh gambar chart. "
-            "Arahkan kursor ke candle mana pun untuk lihat detail Open/High/Low/Close & persentase perubahannya. "
-            "Bisa pilih sampai 4 saham sekaligus untuk dibandingkan berdampingan (split-screen)."
+            "Bisa pilih sampai 4 saham sekaligus untuk dibandingkan berdampingan (split-screen). "
+            "Semua kontrol zoom, indikator teknikal, dan ganti timeframe ada langsung di dalam widget TradingView-nya."
         )
 
     st.markdown("---")
@@ -1337,7 +1056,7 @@ def simpan_memori_ai(riwayat: list, catatan_preferensi: str):
         with open(PATH_MEMORI_AI, "w", encoding="utf-8") as f:
             json.dump({"riwayat": riwayat, "catatan_preferensi": catatan_preferensi}, f, ensure_ascii=False, indent=2)
     except Exception:
-        pass  # gagal simpan bukan hal fatal, chat tetap jalan normal di sesi ini
+        pass
 
 
 SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham di dalam sebuah aplikasi pembanding saham. Tugasmu membantu pengguna memahami data rasio keuangan dan harga saham yang sedang mereka bandingkan.
@@ -1420,12 +1139,6 @@ def _proses_prompt_ai(kotak_chat, prompt_teks: str):
 
 with st.container(key="panel_asisten_ai"):
 
-        # -- Panel dibuat fixed di sisi kanan layar (position:fixed), menyatu
-        #    seperti sidebar bawaan Streamlit tapi di sisi kanan, memanjang
-        #    penuh dari atas sampai bawah. Polos, tanpa efek dekoratif.
-        #    Container ini SELALU di-render (tidak dibungkus if) supaya node-nya
-        #    tetap ada di DOM — buka/tutup panel cuma menggeser transform & opacity,
-        #    bukan memasang/melepas elemen, sehingga transisinya mulus (bukan lompat). --
         _transform_panel = "translateX(0)" if tampilkan_panel_ai else "translateX(100%)"
         _opacity_panel = 1 if tampilkan_panel_ai else 0
         _pointer_panel = "auto" if tampilkan_panel_ai else "none"
@@ -1452,8 +1165,6 @@ with st.container(key="panel_asisten_ai"):
                 will-change: transform;
                 -webkit-overflow-scrolling: touch;
             }}
-            /* Di HP (layar sempit), panel jadi overlay penuh layar biar
-               tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
             @media (max-width: 768px) {{
                 .st-key-panel_asisten_ai {{
                     width: 100vw !important;
@@ -1507,9 +1218,6 @@ with st.container(key="panel_asisten_ai"):
                 border-radius: 10px;
                 padding: 10px 14px;
             }}
-            /* Chat input dibiarkan mengalir normal (bukan sticky/fixed) —
-               nempel di posisi paling bawah dari urutan konten panel,
-               bukan dipaksa "mengambang" secara visual. */
             .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
                 width: 100%;
                 margin-top: 12px;
@@ -1521,7 +1229,6 @@ with st.container(key="panel_asisten_ai"):
                 color: #eef0fb !important;
             }}
 
-            /* Tombol close "X" — bulat kecil, nempel di pojok kanan atas panel. */
             .st-key-panel_asisten_ai .st-key-btn_tutup_panel_ai button {{
                 background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.14);
@@ -1611,7 +1318,6 @@ with st.container(key="panel_asisten_ai"):
                     with st.chat_message(pesan["role"]):
                         st.markdown(_escape_dolar(pesan["content"]))
 
-        # Saran cepat — hanya ditampilkan sebelum obrolan dimulai.
         if not st.session_state.riwayat_chat_saham:
             st.markdown('<div class="gemini-chip-label">Coba tanyakan</div>', unsafe_allow_html=True)
             baris1 = st.columns(2)
