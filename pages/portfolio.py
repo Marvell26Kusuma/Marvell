@@ -157,6 +157,10 @@ st.markdown(
 
         h1 { font-size: 1.6rem !important; }
         h2 { font-size: 1.25rem !important; }
+
+        .ringkasan-modal-grid {
+            grid-template-columns: repeat(2, 1fr) !important;
+        }
     }
     [data-testid="stHorizontalBlock"], [data-testid="stDataFrame"] {
         -webkit-overflow-scrolling: touch;
@@ -164,6 +168,30 @@ st.markdown(
     }
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
     [data-testid="stMetricValue"] { font-weight: 700; }
+
+    /* Kartu ringkasan modal & ekuitas — grid 3 kolom x 2 baris ala platform
+       trading (Trading Balance, Invested, Open / P&L, Gain, Total Equity). */
+    .ringkasan-modal-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 22px 16px;
+        background-color: #161b26;
+        border: 1px solid rgba(151, 166, 195, 0.30);
+        border-radius: 12px;
+        padding: 22px 24px;
+    }
+    .ringkasan-modal-grid .stat .nilai {
+        font-size: 26px;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+        color: #e6e6e6;
+        white-space: nowrap;
+    }
+    .ringkasan-modal-grid .stat .label {
+        font-size: 13px;
+        color: #8a8f99;
+        margin-top: 2px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -301,16 +329,24 @@ Instruksi:
 """
 
 
-def bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang):
+def bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang, saldo_tersedia=0.0, total_equity=0.0):
     if not baris_tampil:
-        return "Portofolio masih kosong, belum ada saham yang dicatat pengguna."
+        return (
+            f"Portofolio belum ada posisi saham. Trading Balance (kas belum diinvestasikan): "
+            f"Rp {saldo_tersedia:,.0f}."
+        )
     baris_teks = [
         f"- {item['Ticker']} ({item['Nama']}): {item['Jumlah']:,.0f} lembar, "
         f"harga beli {item['Harga Beli']:,.0f}, harga sekarang {item['Harga Sekarang']}, "
         f"nilai sekarang {item['Nilai Sekarang']}, untung/rugi {item['Untung/Rugi']} ({item['Persentase']})"
         for item in baris_tampil
     ]
-    ringkasan = f"Total modal: Rp {total_modal:,.0f}. Total nilai sekarang: Rp {total_nilai_sekarang:,.0f}."
+    ringkasan = (
+        f"Trading Balance (kas belum diinvestasikan): Rp {saldo_tersedia:,.0f}. "
+        f"Invested (modal di posisi terbuka): Rp {total_modal:,.0f}. "
+        f"Nilai posisi saat ini: Rp {total_nilai_sekarang:,.0f}. "
+        f"Total Equity (kas + nilai posisi): Rp {total_equity:,.0f}."
+    )
     return ringkasan + "\n" + "\n".join(baris_teks)
 
 
@@ -428,7 +464,7 @@ def simpan_ledger_modal(df: pd.DataFrame):
 
 
 def catat_transaksi_modal(jenis: str, keterangan: str, jumlah: float):
-    """jumlah positif = kas masuk (setor, jual), negatif = kas keluar (tarik, beli)."""
+    """jumlah positif = kas masuk (setor, jual, koreksi hapus), negatif = kas keluar (tarik, beli)."""
     baris_baru = pd.DataFrame([{
         "Tanggal": date.today().isoformat(),
         "Jenis": jenis,
@@ -447,6 +483,30 @@ def hitung_saldo_tersedia() -> float:
     if st.session_state.ledger_modal.empty:
         return 0.0
     return float(st.session_state.ledger_modal["Jumlah"].sum())
+
+
+def render_kartu_ringkasan_modal(saldo_tersedia, invested, jumlah_posisi, pnl, persen_gain, total_equity):
+    """Kartu ringkasan gaya platform trading: grid 3 kolom x 2 baris —
+    Trading Balance / Invested / Open (baris 1), P&L / Gain / Total Equity
+    (baris 2). P&L & Gain diwarnai hijau/merah sesuai tandanya."""
+    warna_pnl = "#26a69a" if pnl >= 0 else "#ef5350"
+    warna_gain = "#26a69a" if persen_gain >= 0 else "#ef5350"
+    tanda_pnl = "+" if pnl >= 0 else ""
+    tanda_gain = "+" if persen_gain >= 0 else ""
+
+    st.markdown(
+        f"""
+        <div class="ringkasan-modal-grid">
+            <div class="stat"><div class="nilai">{saldo_tersedia:,.0f}</div><div class="label">Trading Balance</div></div>
+            <div class="stat"><div class="nilai">{invested:,.0f}</div><div class="label">Invested</div></div>
+            <div class="stat"><div class="nilai">{jumlah_posisi:,.0f}</div><div class="label">Open</div></div>
+            <div class="stat"><div class="nilai" style="color:{warna_pnl};">{tanda_pnl}{pnl:,.0f}</div><div class="label">P&amp;L</div></div>
+            <div class="stat"><div class="nilai" style="color:{warna_gain};">{tanda_gain}{persen_gain:.2f}%</div><div class="label">Gain</div></div>
+            <div class="stat"><div class="nilai">{total_equity:,.0f}</div><div class="label">Total Equity</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
@@ -531,6 +591,34 @@ col_main = st.container()
 with col_main:
 
     # ============================================================
+    # 5a0. Kelola Modal — Setor / Tarik Dana. Ini yang mengisi "Trading
+    #      Balance" di kartu ringkasan; tanpa ini saldo akan selalu 0.
+    # ============================================================
+    with st.expander("Kelola Modal (Setor / Tarik Dana)", expanded=st.session_state.ledger_modal.empty):
+        st.caption(
+            "Trading Balance dihitung dari catatan setor/tarik dana di sini, dikurangi biaya "
+            "setiap kali kamu menambahkan saham ke portofolio (dianggap sebagai 'pembelian')."
+        )
+        col_setor, col_tarik = st.columns(2)
+        with col_setor:
+            jumlah_setor = st.number_input("Jumlah setor", min_value=0.0, step=100000.0, value=0.0, key="input_setor")
+            if st.button("Setor Dana", use_container_width=True) and jumlah_setor > 0:
+                catat_transaksi_modal("Setor", "Setor dana", jumlah_setor)
+                st.rerun()
+        with col_tarik:
+            jumlah_tarik = st.number_input("Jumlah tarik", min_value=0.0, step=100000.0, value=0.0, key="input_tarik")
+            if st.button("Tarik Dana", use_container_width=True) and jumlah_tarik > 0:
+                catat_transaksi_modal("Tarik", "Tarik dana", -jumlah_tarik)
+                st.rerun()
+
+        if not st.session_state.ledger_modal.empty:
+            with st.expander("Riwayat mutasi modal", expanded=False):
+                st.dataframe(
+                    st.session_state.ledger_modal.sort_index(ascending=False),
+                    use_container_width=True, hide_index=True,
+                )
+
+    # ============================================================
     # 5a. Form tambah kepemilikan baru
     # ============================================================
     with st.expander("Tambah Saham ke Portofolio", expanded=st.session_state.portofolio.empty):
@@ -556,14 +644,16 @@ with col_main:
             elif jumlah_baru <= 0 or harga_beli_baru <= 0:
                 st.warning("Jumlah lembar dan harga beli harus lebih dari 0.")
             else:
+                ticker_final = ticker_baru.strip().upper()
                 baris_baru = pd.DataFrame([{
-                    "Ticker": ticker_baru.strip().upper(),
+                    "Ticker": ticker_final,
                     "Jumlah": jumlah_baru,
                     "HargaBeli": harga_beli_baru,
                     "TanggalBeli": tanggal_beli_baru.isoformat(),
                 }])
                 st.session_state.portofolio = pd.concat([st.session_state.portofolio, baris_baru], ignore_index=True)
                 simpan_portofolio(st.session_state.portofolio)
+                catat_transaksi_modal("Beli", f"Beli {ticker_final}", -(jumlah_baru * harga_beli_baru))
                 st.rerun()
 
     st.markdown("---")
@@ -573,14 +663,14 @@ with col_main:
     # ============================================================
     portofolio = st.session_state.portofolio
 
-    # Nilai default dipakai panel Asisten AI walau portofolio masih kosong.
+    # Nilai default dipakai panel Asisten AI & kartu ringkasan walau
+    # portofolio masih kosong (Trading Balance tetap relevan meski belum
+    # ada posisi terbuka).
     baris_tampil = []
     total_modal = 0.0
     total_nilai_sekarang = 0.0
 
-    if portofolio.empty:
-        st.info("Portofolio masih kosong. Tambahkan saham lewat form di atas untuk mulai memantau.")
-    else:
+    if not portofolio.empty:
         with st.spinner("Mengambil harga terkini..."):
             for i, baris in portofolio.iterrows():
                 ticker = baris["Ticker"]
@@ -611,32 +701,23 @@ with col_main:
                     "Tanggal Beli": baris["TanggalBeli"],
                 })
 
-        total_untung_rugi = total_nilai_sekarang - total_modal
-        total_persen = (total_untung_rugi / total_modal * 100) if total_modal else 0
-        naik = total_untung_rugi >= 0
-        warna = "#26a69a" if naik else "#ef5350"
-        tanda = "+" if naik else ""
+    saldo_tersedia = hitung_saldo_tersedia()
+    total_untung_rugi = total_nilai_sekarang - total_modal
+    total_persen = (total_untung_rugi / total_modal * 100) if total_modal else 0.0
+    total_equity = saldo_tersedia + total_nilai_sekarang
 
-        st.markdown(
-            f"""
-            <div style="margin-bottom:10px;">
-                <div style="font-size:14px; color:#8a8f99;">Total Nilai Portofolio</div>
-                <div style="display:flex; align-items:baseline; gap:14px; margin-top:2px;">
-                    <span style="font-size:38px; font-weight:800; letter-spacing:-0.02em;">
-                        Rp {total_nilai_sekarang:,.0f}
-                    </span>
-                    <span style="font-size:18px; font-weight:600; color:{warna};">
-                        {tanda}{total_untung_rugi:,.0f} ({tanda}{total_persen:.2f}%)
-                    </span>
-                </div>
-                <div style="font-size:13px; color:#8a8f99; margin-top:2px;">
-                    Modal: Rp {total_modal:,.0f}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    render_kartu_ringkasan_modal(
+        saldo_tersedia=saldo_tersedia,
+        invested=total_modal,
+        jumlah_posisi=len(baris_tampil),
+        pnl=total_untung_rugi,
+        persen_gain=total_persen,
+        total_equity=total_equity,
+    )
 
+    if portofolio.empty:
+        st.info("Portofolio masih kosong. Tambahkan saham lewat form di atas untuk mulai memantau.")
+    else:
         st.markdown("---")
 
         col_tabel, col_pie = st.columns([2, 1])
@@ -657,13 +738,17 @@ with col_main:
                 hide_index=True,
             )
 
-            st.caption("Hapus kepemilikan:")
+            st.caption("Hapus kepemilikan (modal pembelian akan dikembalikan otomatis ke Trading Balance):")
             for item in baris_tampil:
                 c1, c2 = st.columns([5, 1])
                 c1.write(f"{item['Ticker']} — {item['Jumlah']:,.0f} lembar @ {item['Harga Beli']:,.0f}")
                 if c2.button("Hapus", key=f"hapus_pf_{item['_index']}"):
                     st.session_state.portofolio = st.session_state.portofolio.drop(index=item["_index"]).reset_index(drop=True)
                     simpan_portofolio(st.session_state.portofolio)
+                    catat_transaksi_modal(
+                        "Koreksi", f"Hapus catatan {item['Ticker']}",
+                        item["Jumlah"] * item["Harga Beli"],
+                    )
                     st.rerun()
 
         with col_pie:
@@ -909,12 +994,16 @@ with st.container(key="panel_asisten_ai"):
             for (ikon, teks), kol in zip(SARAN_PROMPT_AI_PF, kolom_chip_pf):
                 with kol:
                     if st.button(f"{ikon}  {teks}", key=f"chip_pf_{teks}", use_container_width=True):
-                        konteks_pf = bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang)
+                        konteks_pf = bangun_konteks_portofolio(
+                            baris_tampil, total_modal, total_nilai_sekarang, saldo_tersedia, total_equity,
+                        )
                         _proses_prompt_ai_pf(kotak_chat_pf, teks, konteks_pf)
                         st.rerun()
 
         prompt_portofolio = st.chat_input("Contoh: Portofolio saya terlalu terkonsentrasi tidak?", key="chat_input_portofolio")
         if prompt_portofolio:
-            konteks_pf = bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang)
+            konteks_pf = bangun_konteks_portofolio(
+                baris_tampil, total_modal, total_nilai_sekarang, saldo_tersedia, total_equity,
+            )
             _proses_prompt_ai_pf(kotak_chat_pf, prompt_portofolio, konteks_pf)
             st.rerun()
