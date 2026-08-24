@@ -9,6 +9,12 @@ import pandas as pd
 import plotly.express as px
 
 try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_TERSEDIA = True
+except ImportError:
+    CURL_CFFI_TERSEDIA = False
+
+try:
     import google.generativeai as genai
     GEMINI_TERSEDIA = True
 except ImportError:
@@ -236,6 +242,19 @@ def tanya_ai(system_prompt: str, riwayat_chat: list) -> str:
 #    Semuanya diletakkan satu folder dengan file utama (bukan di dalam pages/).
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+@st.cache_resource(show_spinner=False)
+def dapatkan_sesi_yf():
+    """Session yang 'menyamar' sebagai browser Chrome asli — Yahoo Finance
+    sering memblokir request dari server cloud, session ini mengurangi
+    kemungkinan itu terjadi."""
+    if not CURL_CFFI_TERSEDIA:
+        return None
+    try:
+        return curl_requests.Session(impersonate="chrome")
+    except Exception:
+        return None
 PATH_CSV_SAHAM = BASE_DIR / "daftar_saham_idx.csv"
 PATH_PORTOFOLIO = BASE_DIR / "portofolio.csv"
 PATH_MEMORI_AI_PF = BASE_DIR / "memori_ai_portofolio.json"
@@ -382,12 +401,61 @@ if "portofolio" not in st.session_state:
 
 
 # ============================================================
+# 5c. Ledger Modal — mencatat semua pergerakan kas: setor, tarik, beli, jual.
+#     Saldo Trading Balance = jumlah semua baris ledger (positif = kas masuk,
+#     negatif = kas keluar). Ini yang menentukan berapa "amunisi" tersisa
+#     buat beli saham baru.
+# ============================================================
+PATH_LEDGER_MODAL = BASE_DIR / "ledger_modal.csv"
+KOLOM_LEDGER = ["Tanggal", "Jenis", "Keterangan", "Jumlah"]
+
+
+def muat_ledger_modal():
+    if PATH_LEDGER_MODAL.exists():
+        try:
+            df = pd.read_csv(PATH_LEDGER_MODAL)
+            for kolom in KOLOM_LEDGER:
+                if kolom not in df.columns:
+                    df[kolom] = None
+            return df[KOLOM_LEDGER]
+        except Exception:
+            return pd.DataFrame(columns=KOLOM_LEDGER)
+    return pd.DataFrame(columns=KOLOM_LEDGER)
+
+
+def simpan_ledger_modal(df: pd.DataFrame):
+    df.to_csv(PATH_LEDGER_MODAL, index=False)
+
+
+def catat_transaksi_modal(jenis: str, keterangan: str, jumlah: float):
+    """jumlah positif = kas masuk (setor, jual), negatif = kas keluar (tarik, beli)."""
+    baris_baru = pd.DataFrame([{
+        "Tanggal": date.today().isoformat(),
+        "Jenis": jenis,
+        "Keterangan": keterangan,
+        "Jumlah": jumlah,
+    }])
+    st.session_state.ledger_modal = pd.concat([st.session_state.ledger_modal, baris_baru], ignore_index=True)
+    simpan_ledger_modal(st.session_state.ledger_modal)
+
+
+if "ledger_modal" not in st.session_state:
+    st.session_state.ledger_modal = muat_ledger_modal()
+
+
+def hitung_saldo_tersedia() -> float:
+    if st.session_state.ledger_modal.empty:
+        return 0.0
+    return float(st.session_state.ledger_modal["Jumlah"].sum())
+
+
+# ============================================================
 # 4. Fetch harga terkini (cache 10 menit)
 # ============================================================
 @st.cache_data(ttl=600, show_spinner=False)
 def ambil_harga_terkini(ticker: str):
     try:
-        info = yf.Ticker(ticker).info
+        info = yf.Ticker(ticker, session=dapatkan_sesi_yf()).info
         harga = info.get("currentPrice") or info.get("regularMarketPrice")
         nama = info.get("shortName", ticker)
         mata_uang = info.get("currency", "")
