@@ -22,108 +22,150 @@ except ImportError:
 
 
 # ============================================================
-# 0. Konstanta & Helper Polygon.io
+# 0. Konstanta & Helper Alpaca Market Data API
 # ============================================================
-POLYGON_BASE_URL = "https://api.polygon.io"
+# CATATAN PENTING soal Alpaca:
+# Alpaca Market Data API cuma nyediain data HARGA (bars, quotes, trades,
+# snapshot) — dia TIDAK punya data fundamental/laporan keuangan (PER, PBV,
+# ROE, DER, EPS, dividend, revenue growth, market cap, dsb). Jadi semua
+# rasio fundamental di app ini tampil "N/A" sebagai placeholder buat nanti
+# (misalnya kalau suatu saat mau disambungin ke sumber data fundamental
+# terpisah). Yang beneran ditarik dari Alpaca cuma: harga terkini, harga
+# penutupan sebelumnya, dan 52-week high/low (semuanya data harga murni).
+#
+# Base URL Data API: https://data.alpaca.markets
+# Base URL Trading API (buat cari daftar ticker/asset): tergantung tipe
+# akun (paper/live) — dipilih di sidebar.
+DATA_BASE_URL = "https://data.alpaca.markets"
+TRADING_BASE_URL_PAPER = "https://paper-api.alpaca.markets"
+TRADING_BASE_URL_LIVE = "https://api.alpaca.markets"
 
 
-def polygon_api_key() -> str:
-    return st.session_state.get("polygon_api_key", "").strip()
+def alpaca_headers() -> dict:
+    key_id = st.session_state.get("alpaca_key_id", "").strip()
+    secret_key = st.session_state.get("alpaca_secret_key", "").strip()
+    if not key_id or not secret_key:
+        return {}
+    return {"APCA-API-KEY-ID": key_id, "APCA-API-SECRET-KEY": secret_key}
 
 
-def _req_polygon(path: str, params: dict = None, timeout: int = 15):
-    """Wrapper request ke Polygon.io. Mengembalikan (json_data, error_msg).
-    error_msg None kalau sukses. Menangani kasus umum: key kosong, 401/403
-    (key salah/fitur tidak termasuk plan), 429 (rate limit tier gratis:
-    5 request/menit)."""
-    key = polygon_api_key()
-    if not key:
-        return None, "API key Polygon belum diisi."
+def trading_base_url() -> str:
+    tipe = st.session_state.get("tipe_akun_alpaca", "Paper (simulasi)")
+    return TRADING_BASE_URL_LIVE if tipe == "Live (akun asli)" else TRADING_BASE_URL_PAPER
 
-    params = dict(params or {})
-    params["apiKey"] = key
-    url = f"{POLYGON_BASE_URL}{path}"
 
+def _req_alpaca(base_url: str, path: str, params: dict = None, timeout: int = 15):
+    """Wrapper request ke Alpaca (Data API atau Trading API tergantung base_url).
+    Mengembalikan (json_data, error_msg). error_msg None kalau sukses.
+    Menangani kasus umum: key kosong, 401/403 (key salah/plan gak cukup),
+    429 (rate limit)."""
+    headers = alpaca_headers()
+    if not headers:
+        return None, "API Key ID / Secret Key Alpaca belum diisi."
+
+    url = f"{base_url}{path}"
     try:
-        resp = requests.get(url, params=params, timeout=timeout)
+        resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
     except requests.exceptions.RequestException as e:
-        return None, f"Gagal konek ke Polygon.io: {e}"
+        return None, f"Gagal konek ke Alpaca: {e}"
 
     if resp.status_code == 429:
-        return None, "Rate limit Polygon.io tercapai (tier gratis = 5 request/menit). Tunggu sebentar lalu coba lagi."
+        return None, "Rate limit Alpaca tercapai. Tunggu sebentar lalu coba lagi."
     if resp.status_code in (401, 403):
-        return None, "API key Polygon ditolak, atau data ini butuh plan berbayar yang lebih tinggi."
+        return None, "API Key Alpaca ditolak, atau data ini butuh subscription/plan yang lebih tinggi."
     if resp.status_code == 404:
-        return None, "Data tidak ditemukan (ticker mungkin salah/tidak terdaftar di Polygon)."
+        return None, "Data tidak ditemukan (simbol mungkin salah/tidak terdaftar di Alpaca)."
     if resp.status_code != 200:
-        return None, f"Polygon.io mengembalikan status {resp.status_code}."
+        return None, f"Alpaca mengembalikan status {resp.status_code}."
 
     try:
-        data = resp.json()
+        return resp.json(), None
     except Exception:
-        return None, "Respons Polygon.io tidak bisa dibaca (bukan JSON valid)."
-
-    if data.get("status") in ("ERROR",):
-        return None, data.get("error", "Terjadi error dari Polygon.io.")
-
-    return data, None
+        return None, "Respons Alpaca tidak bisa dibaca (bukan JSON valid)."
 
 
-def is_crypto(ticker: str) -> bool:
-    return ticker.upper().startswith("X:")
+def _req_alpaca_data(path: str, params: dict = None, timeout: int = 15):
+    return _req_alpaca(DATA_BASE_URL, path, params, timeout)
 
 
-def label_tampil_ticker(ticker: str) -> str:
-    """Untuk crypto, buang prefix 'X:' dan suffix 'USD' biar tampilan lebih ringkas."""
-    if is_crypto(ticker):
-        inti = ticker.upper().replace("X:", "")
-        if inti.endswith("USD"):
-            inti = inti[:-3]
-        return f"{inti}/USD (Crypto)"
-    return ticker.upper()
+def _req_alpaca_trading(path: str, params: dict = None, timeout: int = 15):
+    return _req_alpaca(trading_base_url(), path, params, timeout)
+
+
+def is_crypto(kode: str) -> bool:
+    return "/" in kode
+
+
+def label_tampil_ticker(kode: str) -> str:
+    if is_crypto(kode):
+        return f"{kode} (Crypto)"
+    return kode.upper()
 
 
 def normalisasi_kode_crypto(kode: str) -> str:
-    """Ubah input user semacam 'BTC' atau 'btc-usd' jadi format Polygon 'X:BTCUSD'."""
-    k = kode.strip().upper().replace("-", "").replace("/", "")
-    if k.startswith("X:"):
+    """Alpaca pakai format 'BTC/USD' (pakai slash) buat pasangan crypto.
+    Ubah input user semacam 'BTC' / 'btc-usd' / 'BTCUSD' jadi 'BTC/USD'."""
+    k = kode.strip().upper().replace("-", "").replace(" ", "")
+    if "/" in k:
         return k
-    if not k.endswith("USD"):
-        k = f"{k}USD"
-    return f"X:{k}"
+    if k.endswith("USD"):
+        k = k[:-3]
+    return f"{k}/USD"
 
 
 # ============================================================
 # 1. Konfigurasi Tampilan Halaman
 # ============================================================
 st.set_page_config(page_title="Pembanding Saham & Crypto", layout="wide", page_icon="chart_with_upwards_trend")
-st.title("Pembanding Saham AS & Crypto (via Polygon.io)")
-st.caption("Bandingkan rasio keuangan & pergerakan harga saham Amerika Serikat dan crypto sekaligus — data dari Polygon.io.")
+st.title("Pembanding Saham AS & Crypto (via Alpaca Market Data API)")
+st.caption("Bandingkan harga saham Amerika Serikat dan crypto sekaligus — data harga dari Alpaca, grafik dari TradingView Widget.")
+
+st.info(
+    "**Catatan:** Alpaca Market Data API cuma nyediain data harga, bukan data fundamental. "
+    "Kolom rasio keuangan (PER, PBV, ROE, dividend, dst) di bawah sengaja tampil **N/A** sebagai "
+    "placeholder — belum ada sumber datanya di versi ini. Grafik pergerakan harga memakai "
+    "**TradingView Widget** resmi (narik data sendiri dari TradingView, jadi bisa saja sedikit "
+    "berbeda dengan harga snapshot dari Alpaca di atasnya).",
+    icon="ℹ️",
+)
 
 # ============================================================
-# 1a. API Key Polygon.io
+# 1a. API Key Alpaca
 # ============================================================
-with st.sidebar.expander("Koneksi Polygon.io", expanded="polygon_api_key" not in st.session_state or not st.session_state.get("polygon_api_key")):
+with st.sidebar.expander("Koneksi Alpaca", expanded="alpaca_key_id" not in st.session_state or not st.session_state.get("alpaca_key_id")):
     st.caption(
-        "Masukkan API key Polygon.io kamu (ada tier gratis, tapi dibatasi 5 request/menit dan data "
-        "end-of-day, bukan real-time). API key ini hanya disimpan selama sesi berjalan (tidak ditulis ke file)."
+        "Masukkan API Key ID & Secret Key Alpaca kamu (akun paper trading gratis juga bisa dipakai "
+        "buat akses Market Data API). Key ini hanya disimpan selama sesi berjalan (tidak ditulis ke file)."
     )
-    st.session_state["polygon_api_key"] = st.text_input(
-        "API Key Polygon.io",
+    st.session_state["alpaca_key_id"] = st.text_input(
+        "APCA-API-KEY-ID",
         type="password",
-        value=st.session_state.get("polygon_api_key", ""),
-        placeholder="isi API key kamu di sini",
-        key="input_polygon_api_key",
+        value=st.session_state.get("alpaca_key_id", ""),
+        placeholder="isi API Key ID kamu di sini",
+        key="input_alpaca_key_id",
     )
-    st.caption("Daftar API key gratis di polygon.io/dashboard/signup")
+    st.session_state["alpaca_secret_key"] = st.text_input(
+        "APCA-API-SECRET-KEY",
+        type="password",
+        value=st.session_state.get("alpaca_secret_key", ""),
+        placeholder="isi API Secret Key kamu di sini",
+        key="input_alpaca_secret_key",
+    )
+    st.session_state["tipe_akun_alpaca"] = st.radio(
+        "Tipe akun (buat pencarian daftar ticker via Trading API)",
+        ["Paper (simulasi)", "Live (akun asli)"],
+        horizontal=True,
+        key="input_tipe_akun_alpaca",
+    )
+    st.caption("Daftar API key gratis di app.alpaca.markets (pilih akun Paper Trading kalau belum mau pakai akun live).")
 
-if not polygon_api_key():
-    st.warning("Isi dulu API key Polygon.io di sidebar (bagian 'Koneksi Polygon.io') untuk mulai memakai aplikasi ini.")
+if not alpaca_headers():
+    st.warning("Isi dulu API Key ID & Secret Key Alpaca di sidebar (bagian 'Koneksi Alpaca') untuk mulai memakai aplikasi ini.")
     st.stop()
 
 
 # ============================================================
-# 1b. Tampilan & Tema — kustomisasi warna latar website + warna candlestick
+# 1b. Tampilan & Tema — kustomisasi warna latar website + tema chart TradingView
 # ============================================================
 TEMA_PRESET = {
     "Gelap Klasik": {"app_bg": "#0e1117", "sidebar_bg": "#131722", "teks": "#e6e6e6"},
@@ -146,10 +188,7 @@ with st.sidebar.expander("Tampilan & Tema", expanded=False):
         app_bg, sidebar_bg, teks_warna = preset["app_bg"], preset["sidebar_bg"], preset["teks"]
 
     st.markdown("---")
-    st.caption("Warna candlestick di chart pergerakan harga:")
-    warna_candle_naik = st.color_picker("Candle Naik", "#26a69a", key="warna_candle_naik")
-    warna_candle_turun = st.color_picker("Candle Turun", "#ef5350", key="warna_candle_turun")
-    warna_bg_chart = st.color_picker("Latar belakang chart", "#131722", key="warna_bg_chart")
+    tema_chart_tv = st.radio("Tema grafik TradingView", ["dark", "light"], horizontal=True, key="tema_chart_tv")
 
 st.markdown(
     f"""
@@ -273,10 +312,9 @@ st.markdown(
 )
 
 # ============================================================
-# 2. Daftar Kategori Saham AS & Crypto (hardcoded, karena tidak ada
-#    CSV BEI di sini — Polygon dipakai untuk pasar global/AS & crypto).
-#    Pencarian tambahan (di luar daftar ini) dilakukan live via
-#    endpoint /v3/reference/tickers Polygon.
+# 2. Daftar Kategori Saham AS & Crypto (hardcoded — dipakai buat quick-pick
+#    di sidebar; pencarian tambahan di luar daftar ini dilakukan live via
+#    endpoint /v2/assets Alpaca Trading API).
 # ============================================================
 KATEGORI_SAHAM_AS = {
     "Teknologi": {
@@ -311,13 +349,29 @@ KATEGORI_SAHAM_AS = {
 
 KATEGORI_CRYPTO_RAW = {
     "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana", "XRP": "XRP",
-    "ADA": "Cardano", "DOGE": "Dogecoin", "MATIC": "Polygon", "DOT": "Polkadot",
-    "LTC": "Litecoin", "AVAX": "Avalanche",
+    "ADA": "Cardano", "DOGE": "Dogecoin", "DOT": "Polkadot",
+    "LTC": "Litecoin", "AVAX": "Avalanche", "LINK": "Chainlink",
 }
 KATEGORI_CRYPTO = {normalisasi_kode_crypto(k): v for k, v in KATEGORI_CRYPTO_RAW.items()}
 
 KATEGORI_SAHAM = dict(KATEGORI_SAHAM_AS)
 KATEGORI_SAHAM["Crypto"] = KATEGORI_CRYPTO
+
+# Alias exchange Alpaca -> kode exchange yang dikenali TradingView.
+ALIAS_EXCHANGE_TV = {
+    "NASDAQ": "NASDAQ", "NYSE": "NYSE", "NYSEARCA": "AMEX", "ARCA": "AMEX",
+    "AMEX": "AMEX", "BATS": "BATS", "OTC": "OTC",
+}
+
+
+def tebak_simbol_tradingview(kode: str, exchange_alpaca: str = None) -> str:
+    """Tebakan default simbol TradingView. Bukan jaminan selalu tepat —
+    makanya di panel chart selalu disediakan kotak buat override manual."""
+    if is_crypto(kode):
+        inti = kode.replace("/", "")
+        return f"COINBASE:{inti}"
+    exch_tv = ALIAS_EXCHANGE_TV.get((exchange_alpaca or "").upper(), "NASDAQ")
+    return f"{exch_tv}:{kode.upper()}"
 
 
 # ============================================================
@@ -339,26 +393,39 @@ def hapus_saham(kode: str):
 
 
 # ============================================================
-# 4. Pencarian Ticker via Polygon.io (saham & crypto)
+# 4. Pencarian Ticker via Alpaca Trading API (/v2/assets)
+#    Endpoint ini gak punya parameter "search" — jadi kita ambil daftar
+#    lengkapnya sekali (di-cache lumayan lama), lalu difilter di sisi
+#    Python berdasarkan kata kunci.
 # ============================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def cari_ticker_polygon(kata_kunci: str, market: str):
-    """market: 'stocks' atau 'crypto'."""
-    if not kata_kunci or len(kata_kunci.strip()) < 2:
-        return [], None
-    data, err = _req_polygon(
-        "/v3/reference/tickers",
-        {"search": kata_kunci.strip(), "market": market, "active": "true", "limit": 10},
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def ambil_semua_aset(asset_class: str):
+    """asset_class: 'us_equity' atau 'crypto'."""
+    data, err = _req_alpaca_trading(
+        "/v2/assets", {"status": "active", "asset_class": asset_class}
     )
     if err:
         return [], err
+    return data or [], None
+
+
+def cari_ticker_alpaca(kata_kunci: str, asset_class: str):
+    if not kata_kunci or len(kata_kunci.strip()) < 2:
+        return [], None
+    semua, err = ambil_semua_aset(asset_class)
+    if err:
+        return [], err
+    kk = kata_kunci.strip().upper()
     hasil = []
-    for r in data.get("results", []):
-        simbol = r.get("ticker", "")
-        nama = r.get("name", "")
-        bursa = r.get("primary_exchange", "")
-        if simbol:
-            hasil.append((simbol, nama, bursa))
+    for a in semua:
+        simbol = a.get("symbol", "")
+        nama = a.get("name", "") or ""
+        if not a.get("tradable", True):
+            continue
+        if kk in simbol.upper() or kk in nama.upper():
+            hasil.append((simbol, nama, a.get("exchange", "")))
+        if len(hasil) >= 15:
+            break
     return hasil, None
 
 
@@ -445,30 +512,30 @@ with st.sidebar.expander("Pilih dari Kategori", expanded=True):
         st.rerun()
 
 with st.sidebar.expander("Cari Saham AS Lainnya"):
-    kueri_saham = st.text_input("Nama perusahaan / kode ticker", placeholder="contoh: netflix / NFLX", key="kueri_saham_polygon")
+    kueri_saham = st.text_input("Nama perusahaan / kode ticker", placeholder="contoh: netflix / NFLX", key="kueri_saham_alpaca")
     if kueri_saham:
-        hasil_saham, err_saham = cari_ticker_polygon(kueri_saham, "stocks")
+        hasil_saham, err_saham = cari_ticker_alpaca(kueri_saham, "us_equity")
         if err_saham:
             st.caption(f"Gagal mencari: {err_saham}")
         elif hasil_saham:
             label_hasil = [f"{s}  —  {n} ({b})" for s, n, b in hasil_saham]
-            pilihan_saham = st.selectbox("Hasil pencarian", label_hasil, key="pilihan_saham_polygon")
-            if st.button("Tambahkan hasil pencarian", key="btn_tambah_saham_polygon"):
+            pilihan_saham = st.selectbox("Hasil pencarian", label_hasil, key="pilihan_saham_alpaca")
+            if st.button("Tambahkan hasil pencarian", key="btn_tambah_saham_alpaca"):
                 tambah_saham(pilihan_saham.split("  —  ")[0])
                 st.rerun()
         else:
             st.caption("Tidak ada hasil. Coba kata kunci lain.")
 
 with st.sidebar.expander("Cari Crypto Lainnya"):
-    kueri_crypto = st.text_input("Nama / kode coin", placeholder="contoh: shiba inu / SHIB", key="kueri_crypto_polygon")
+    kueri_crypto = st.text_input("Nama / kode coin", placeholder="contoh: shiba inu / SHIB", key="kueri_crypto_alpaca")
     if kueri_crypto:
-        hasil_crypto, err_crypto = cari_ticker_polygon(kueri_crypto, "crypto")
+        hasil_crypto, err_crypto = cari_ticker_alpaca(kueri_crypto, "crypto")
         if err_crypto:
             st.caption(f"Gagal mencari: {err_crypto}")
         elif hasil_crypto:
             label_hasil_c = [f"{s}  —  {n}" for s, n, _ in hasil_crypto]
-            pilihan_crypto = st.selectbox("Hasil pencarian", label_hasil_c, key="pilihan_crypto_polygon")
-            if st.button("Tambahkan hasil pencarian", key="btn_tambah_crypto_polygon"):
+            pilihan_crypto = st.selectbox("Hasil pencarian", label_hasil_c, key="pilihan_crypto_alpaca")
+            if st.button("Tambahkan hasil pencarian", key="btn_tambah_crypto_alpaca"):
                 tambah_saham(pilihan_crypto.split("  —  ")[0])
                 st.rerun()
         else:
@@ -599,7 +666,7 @@ col_main = st.container()
 with col_main:
 
     # ============================================================
-    # 6. Fungsi Mengambil & Menghitung Rasio via Polygon.io
+    # 6. Fungsi Mengambil Data Harga via Alpaca (snapshot + 52w high/low)
     # ============================================================
     def fmt(val, desimal=2):
         try:
@@ -610,149 +677,146 @@ with col_main:
             return None
 
 
-    def _cari_nilai(items: list, *nama_field: str):
-        """Cari nilai 'value' dari list item financial statement Polygon
-        berdasarkan salah satu nama field yang cocok (case-insensitive)."""
-        if not items:
-            return None
-        for key, item in items.items() if isinstance(items, dict) else []:
-            pass
-        # struktur Polygon: {"revenues": {"value": ..., "label": ...}, ...}
-        if isinstance(items, dict):
-            for nf in nama_field:
-                if nf in items and isinstance(items[nf], dict):
-                    return items[nf].get("value")
-        return None
-
-
     @st.cache_data(ttl=900, show_spinner=False)
-    def ambil_snapshot_harga(ticker: str):
-        """Ambil harga terkini (atau close hari sebelumnya kalau snapshot
-        tidak tersedia di plan). Berlaku untuk saham & crypto."""
-        if is_crypto(ticker):
-            data, err = _req_polygon(f"/v2/snapshot/locale/global/markets/crypto/tickers/{ticker}")
-            if not err and data and data.get("ticker"):
-                t = data["ticker"]
-                harga = (t.get("lastTrade") or {}).get("p") or (t.get("day") or {}).get("c")
-                harga_kemarin = (t.get("prevDay") or {}).get("c")
-                if harga is not None:
-                    return {"harga": harga, "harga_kemarin": harga_kemarin}
-            # fallback: aggregates 2 hari terakhir
-            return _fallback_harga_dari_aggregates(ticker)
-        else:
-            data, err = _req_polygon(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
-            if not err and data and data.get("ticker"):
-                t = data["ticker"]
-                harga = (t.get("lastTrade") or {}).get("p") or (t.get("day") or {}).get("c")
-                harga_kemarin = (t.get("prevDay") or {}).get("c")
-                if harga is not None:
-                    return {"harga": harga, "harga_kemarin": harga_kemarin}
-            return _fallback_harga_dari_aggregates(ticker)
+    def ambil_snapshot_batch(daftar_stock: tuple, daftar_crypto: tuple):
+        """Ambil snapshot (harga terkini + harga kemarin) untuk sekumpulan
+        saham & crypto sekaligus (dibatch jadi 1-2 request, bukan per-ticker,
+        biar hemat kuota). Return dict {kode: {"harga":..., "harga_kemarin":...}}."""
+        hasil = {}
 
+        if daftar_stock:
+            data, err = _req_alpaca_data(
+                "/v2/stocks/snapshots", {"symbols": ",".join(daftar_stock), "feed": "iex"}
+            )
+            if not err and data:
+                for simbol, snap in (data.get("snapshots") or data).items():
+                    if not isinstance(snap, dict):
+                        continue
+                    harga = None
+                    if snap.get("latestTrade"):
+                        harga = snap["latestTrade"].get("p")
+                    if harga is None and snap.get("dailyBar"):
+                        harga = snap["dailyBar"].get("c")
+                    harga_kemarin = None
+                    if snap.get("prevDailyBar"):
+                        harga_kemarin = snap["prevDailyBar"].get("c")
+                    if harga is not None:
+                        hasil[simbol] = {"harga": harga, "harga_kemarin": harga_kemarin}
 
-    def _fallback_harga_dari_aggregates(ticker: str):
-        """Kalau endpoint snapshot tidak tersedia di plan Polygon, ambil
-        2 candle harian terakhir dari endpoint aggregates sebagai gantinya
-        (harga close hari terakhir & sebelumnya)."""
-        akhir = datetime.utcnow().date()
-        mulai = akhir - timedelta(days=10)
-        data, err = _req_polygon(
-            f"/v2/aggs/ticker/{ticker}/range/1/day/{mulai}/{akhir}",
-            {"adjusted": "true", "sort": "desc", "limit": 5},
-        )
-        if err or not data or not data.get("results"):
-            return None
-        hasil = data["results"]
-        harga = hasil[0]["c"]
-        harga_kemarin = hasil[1]["c"] if len(hasil) > 1 else None
-        return {"harga": harga, "harga_kemarin": harga_kemarin}
+        if daftar_crypto:
+            data, err = _req_alpaca_data(
+                "/v1beta3/crypto/us/snapshots", {"symbols": ",".join(daftar_crypto)}
+            )
+            if not err and data:
+                for simbol, snap in (data.get("snapshots") or {}).items():
+                    if not isinstance(snap, dict):
+                        continue
+                    harga = None
+                    if snap.get("latestTrade"):
+                        harga = snap["latestTrade"].get("p")
+                    if harga is None and snap.get("dailyBar"):
+                        harga = snap["dailyBar"].get("c")
+                    harga_kemarin = None
+                    if snap.get("prevDailyBar"):
+                        harga_kemarin = snap["prevDailyBar"].get("c")
+                    if harga is not None:
+                        hasil[simbol] = {"harga": harga, "harga_kemarin": harga_kemarin}
 
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def ambil_detail_ticker(ticker: str):
-        if is_crypto(ticker):
-            return None, None
-        data, err = _req_polygon(f"/v3/reference/tickers/{ticker}")
-        if err:
-            return None, err
-        return data.get("results"), None
+        return hasil
 
 
     @st.cache_data(ttl=3600, show_spinner=False)
-    def ambil_financials(ticker: str, limit: int = 2):
-        """Ambil laporan keuangan tahunan terakhir (untuk hitung rasio +
-        pertumbuhan YoY). Tidak berlaku untuk crypto."""
-        if is_crypto(ticker):
-            return [], None
-        data, err = _req_polygon(
-            "/vX/reference/financials",
-            {"ticker": ticker, "timeframe": "annual", "limit": limit, "sort": "period_of_report_date"},
-        )
-        if err:
-            return [], err
-        hasil = data.get("results", [])
-        # urutkan terbaru dulu
-        hasil = sorted(hasil, key=lambda r: r.get("end_date", ""), reverse=True)
-        return hasil, None
-
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def ambil_dividen_12bulan(ticker: str):
-        if is_crypto(ticker):
-            return 0.0
-        data, err = _req_polygon(
-            "/v3/reference/dividends",
-            {"ticker": ticker, "limit": 8, "order": "desc", "sort": "ex_dividend_date"},
-        )
-        if err or not data:
-            return 0.0
-        batas = datetime.utcnow().date() - timedelta(days=370)
-        total = 0.0
-        for d in data.get("results", []):
-            try:
-                tgl = datetime.strptime(d.get("ex_dividend_date", ""), "%Y-%m-%d").date()
-                if tgl >= batas:
-                    total += float(d.get("cash_amount") or 0)
-            except Exception:
-                continue
-        return total
-
-
-    @st.cache_data(ttl=3600, show_spinner=False)
-    def ambil_52w_high_low(ticker: str):
+    def ambil_52w_high_low_batch(daftar_stock: tuple, daftar_crypto: tuple):
+        """Ambil high/low ~52 minggu terakhir dari daily bars (dibatch)."""
+        hasil = {}
         akhir = datetime.utcnow().date()
         mulai = akhir - timedelta(days=370)
-        data, err = _req_polygon(
-            f"/v2/aggs/ticker/{ticker}/range/1/day/{mulai}/{akhir}",
-            {"adjusted": "true", "sort": "asc", "limit": 400},
-        )
-        if err or not data or not data.get("results"):
-            return None, None
-        hasil = data["results"]
-        tinggi = max(r["h"] for r in hasil)
-        rendah = min(r["l"] for r in hasil)
-        return tinggi, rendah
+
+        if daftar_stock:
+            data, err = _req_alpaca_data(
+                "/v2/stocks/bars",
+                {
+                    "symbols": ",".join(daftar_stock),
+                    "timeframe": "1Day",
+                    "start": mulai.isoformat(),
+                    "end": akhir.isoformat(),
+                    "limit": 10000,
+                    "feed": "iex",
+                    "adjustment": "split",
+                },
+            )
+            if not err and data and data.get("bars"):
+                for simbol, bars in data["bars"].items():
+                    if not bars:
+                        continue
+                    hasil[simbol] = (max(b["h"] for b in bars), min(b["l"] for b in bars))
+
+        if daftar_crypto:
+            data, err = _req_alpaca_data(
+                "/v1beta3/crypto/us/bars",
+                {
+                    "symbols": ",".join(daftar_crypto),
+                    "timeframe": "1Day",
+                    "start": mulai.isoformat(),
+                    "end": akhir.isoformat(),
+                    "limit": 10000,
+                },
+            )
+            if not err and data and data.get("bars"):
+                for simbol, bars in data["bars"].items():
+                    if not bars:
+                        continue
+                    hasil[simbol] = (max(b["h"] for b in bars), min(b["l"] for b in bars))
+
+        return hasil
 
 
-    @st.cache_data(ttl=900, show_spinner=False)
-    def ambil_rasio_saham(ticker: str):
-        snap = ambil_snapshot_harga(ticker)
-        if not snap or snap.get("harga") is None:
-            return None
+    @st.cache_data(ttl=6 * 3600, show_spinner=False)
+    def ambil_nama_exchange_saham(simbol: str):
+        """Ambil nama perusahaan & exchange dari daftar aset yang sudah di-cache
+        (dipakai buat label kartu & tebakan simbol TradingView)."""
+        semua, err = ambil_semua_aset("us_equity")
+        if err:
+            return simbol, None
+        for a in semua:
+            if a.get("symbol") == simbol:
+                return a.get("name", simbol), a.get("exchange")
+        return simbol, None
 
-        harga = snap["harga"]
-        harga_kemarin = snap.get("harga_kemarin")
 
-        if is_crypto(ticker):
-            return {
-                "Nama": label_tampil_ticker(ticker),
-                "Ticker": ticker,
-                "Tipe": "Crypto",
+    def bangun_ringkasan(daftar_kode: list) -> dict:
+        daftar_stock = tuple(k for k in daftar_kode if not is_crypto(k))
+        daftar_crypto = tuple(k for k in daftar_kode if is_crypto(k))
+
+        snapshot = ambil_snapshot_batch(daftar_stock, daftar_crypto)
+        hilo = ambil_52w_high_low_batch(daftar_stock, daftar_crypto)
+
+        data_semua = {}
+        for kode in daftar_kode:
+            snap = snapshot.get(kode)
+            if not snap or snap.get("harga") is None:
+                continue
+
+            tinggi_52w, rendah_52w = hilo.get(kode, (None, None))
+
+            if is_crypto(kode):
+                nama = KATEGORI_CRYPTO.get(kode, kode.replace("/USD", ""))
+                exch = None
+            else:
+                nama, exch = ambil_nama_exchange_saham(kode)
+
+            data_semua[kode] = {
+                "Nama": nama,
+                "Ticker": kode,
+                "Tipe": "Crypto" if is_crypto(kode) else "Saham",
                 "Mata Uang": "USD",
-                "Harga": harga,
-                "Harga Kemarin": harga_kemarin,
+                "Harga": snap["harga"],
+                "Harga Kemarin": snap.get("harga_kemarin"),
+                "Exchange": exch,
+                "Simbol TradingView": tebak_simbol_tradingview(kode, exch),
+
+                # --- Rasio fundamental: TIDAK tersedia dari Alpaca Market Data API ---
                 "Market Cap": None,
-                # semua rasio fundamental N/A untuk crypto
                 "PER (Trailing)": None, "PER (Forward)": None, "PBV": None, "PEG Ratio": None,
                 "Price/Sales": None, "EV/EBITDA": None, "EV/Revenue": None,
                 "ROE (%)": None, "ROA (%)": None, "Net Profit Margin (%)": None,
@@ -761,359 +825,43 @@ with col_main:
                 "Current Ratio": None, "Quick Ratio": None, "DER (Debt to Equity)": None, "Total Debt": None,
                 "Revenue Growth (%)": None, "Earnings Growth (%)": None,
                 "Dividend Yield (%)": None, "Payout Ratio (%)": None,
-                "Beta": None, "52W High": None, "52W Low": None,
+                "Beta": None,
+                "52W High": fmt(tinggi_52w, 0),
+                "52W Low": fmt(rendah_52w, 0),
             }
-
-        detail, _ = ambil_detail_ticker(ticker)
-        fin_list, _ = ambil_financials(ticker, limit=2)
-        fin_terbaru = fin_list[0] if fin_list else None
-        fin_prev = fin_list[1] if len(fin_list) > 1 else None
-
-        nama = (detail or {}).get("name", ticker)
-        mata_uang = (detail or {}).get("currency_name", "usd").upper()
-        market_cap = (detail or {}).get("market_cap")
-        shares_out = (detail or {}).get("weighted_shares_outstanding") or (detail or {}).get("share_class_shares_outstanding")
-
-        revenue = eps = net_income = gross_profit = operating_income = None
-        equity = total_liabilities = total_assets = current_assets = current_liabilities = None
-        long_term_debt = short_term_debt = None
-
-        if fin_terbaru:
-            fin_data = fin_terbaru.get("financials", {})
-            income = fin_data.get("income_statement", {})
-            balance = fin_data.get("balance_sheet", {})
-
-            revenue = _cari_nilai(income, "revenues", "total_revenue")
-            eps = _cari_nilai(income, "diluted_earnings_per_share", "basic_earnings_per_share")
-            net_income = _cari_nilai(income, "net_income_loss")
-            gross_profit = _cari_nilai(income, "gross_profit")
-            operating_income = _cari_nilai(income, "operating_income_loss")
-
-            equity = _cari_nilai(balance, "equity", "equity_attributable_to_parent")
-            total_liabilities = _cari_nilai(balance, "liabilities")
-            total_assets = _cari_nilai(balance, "assets")
-            current_assets = _cari_nilai(balance, "current_assets")
-            current_liabilities = _cari_nilai(balance, "current_liabilities")
-            long_term_debt = _cari_nilai(balance, "long_term_debt")
-            short_term_debt = _cari_nilai(balance, "short_term_debt", "current_debt")
-
-        revenue_prev = net_income_prev = None
-        if fin_prev:
-            income_prev = fin_prev.get("financials", {}).get("income_statement", {})
-            revenue_prev = _cari_nilai(income_prev, "revenues", "total_revenue")
-            net_income_prev = _cari_nilai(income_prev, "net_income_loss")
-
-        per = (harga / eps) if (eps and eps != 0) else None
-        book_value_per_share = (equity / shares_out) if (equity and shares_out) else None
-        pbv = (harga / book_value_per_share) if book_value_per_share else None
-        roe = ((net_income / equity) * 100) if (net_income is not None and equity) else None
-        roa = ((net_income / total_assets) * 100) if (net_income is not None and total_assets) else None
-        npm = ((net_income / revenue) * 100) if (net_income is not None and revenue) else None
-        gpm = ((gross_profit / revenue) * 100) if (gross_profit is not None and revenue) else None
-        opm = ((operating_income / revenue) * 100) if (operating_income is not None and revenue) else None
-        current_ratio = (current_assets / current_liabilities) if (current_assets and current_liabilities) else None
-        der = (total_liabilities / equity) if (total_liabilities is not None and equity) else None
-        price_to_sales = (market_cap / revenue) if (market_cap and revenue) else None
-
-        total_debt = None
-        if long_term_debt is not None or short_term_debt is not None:
-            total_debt = (long_term_debt or 0) + (short_term_debt or 0)
-
-        rev_growth = (((revenue - revenue_prev) / revenue_prev) * 100) if (revenue and revenue_prev) else None
-        earn_growth = (((net_income - net_income_prev) / abs(net_income_prev)) * 100) if (net_income is not None and net_income_prev) else None
-
-        dividen_12bulan = ambil_dividen_12bulan(ticker)
-        dividend_yield = ((dividen_12bulan / harga) * 100) if (dividen_12bulan and harga) else None
-        payout_ratio = ((dividen_12bulan / eps) * 100) if (dividen_12bulan and eps and eps > 0) else None
-
-        tinggi_52w, rendah_52w = ambil_52w_high_low(ticker)
-
-        return {
-            "Nama": nama,
-            "Ticker": ticker,
-            "Tipe": "Saham",
-            "Mata Uang": mata_uang,
-            "Harga": harga,
-            "Harga Kemarin": harga_kemarin,
-            "Market Cap": market_cap,
-
-            "PER (Trailing)": fmt(per),
-            "PER (Forward)": None,  # tidak tersedia di Polygon reference/financials
-            "PBV": fmt(pbv),
-            "PEG Ratio": None,  # butuh estimasi pertumbuhan forward, tidak tersedia
-            "Price/Sales": fmt(price_to_sales),
-            "EV/EBITDA": None,  # butuh EBITDA & enterprise value yang tidak selalu lengkap di plan dasar
-            "EV/Revenue": None,
-
-            "ROE (%)": fmt(roe),
-            "ROA (%)": fmt(roa),
-            "Net Profit Margin (%)": fmt(npm),
-            "Gross Margin (%)": fmt(gpm),
-            "Operating Margin (%)": fmt(opm),
-            "EPS (Trailing)": fmt(eps),
-            "EPS (Forward)": None,
-
-            "Current Ratio": fmt(current_ratio),
-            "Quick Ratio": None,  # butuh rincian inventory yang tidak selalu tersedia
-            "DER (Debt to Equity)": fmt(der),
-            "Total Debt": total_debt,
-
-            "Revenue Growth (%)": fmt(rev_growth),
-            "Earnings Growth (%)": fmt(earn_growth),
-            "Dividend Yield (%)": fmt(dividend_yield),
-            "Payout Ratio (%)": fmt(payout_ratio),
-
-            "Beta": None,  # tidak disediakan Polygon reference data
-            "52W High": fmt(tinggi_52w, 0),
-            "52W Low": fmt(rendah_52w, 0),
-        }
+        return data_semua
 
 
-    TIMEFRAME_HARGA = {
-        "Harian": {"multiplier": 1, "timespan": "day", "rentang_hari": 180},
-        "Mingguan": {"multiplier": 1, "timespan": "week", "rentang_hari": 365 * 2},
-        "Bulanan": {"multiplier": 1, "timespan": "month", "rentang_hari": 365 * 5},
-        "Tahunan": {"multiplier": 1, "timespan": "year", "rentang_hari": 365 * 15},
-    }
-
-
-    @st.cache_data(ttl=600, show_spinner=False)
-    def ambil_data_harga(ticker: str, multiplier: int, timespan: str, rentang_hari: int):
-        akhir = datetime.utcnow().date()
-        mulai = akhir - timedelta(days=rentang_hari)
-        data, err = _req_polygon(
-            f"/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{mulai}/{akhir}",
-            {"adjusted": "true", "sort": "asc", "limit": 5000},
-        )
-        if err or not data or not data.get("results"):
-            return None
-
-        df = pd.DataFrame(data["results"])
-        if df.empty:
-            return None
-        df["Waktu"] = pd.to_datetime(df["t"], unit="ms")
-        df = df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"})
-        return df[["Waktu", "Open", "High", "Low", "Close", "Volume"]].dropna()
-
-
-    def render_tradingview_chart(
-        df: pd.DataFrame, ticker: str, tinggi: int = 560, chart_key: str = "tvchart",
-        warna_naik: str = "#26a69a", warna_turun: str = "#ef5350", warna_bg_chart: str = "#131722",
-    ):
-        """Render candlestick + volume pakai library asli TradingView: Lightweight Charts
-        (open-source, MIT license, dipakai TradingView sendiri untuk versi gratisnya)."""
-        df_js = df.copy()
-        df_js["time"] = pd.to_datetime(df_js["Waktu"]).dt.strftime("%Y-%m-%d")
-        df_js["PctChange"] = df_js["Close"].pct_change() * 100
-
-        data_candle = df_js[["time", "Open", "High", "Low", "Close", "PctChange"]].rename(
-            columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "PctChange": "pctChange"}
-        )
-        data_candle["pctChange"] = data_candle["pctChange"].where(data_candle["pctChange"].notna(), None)
-        data_candle = data_candle.to_dict(orient="records")
-
-        data_volume = [
-            {
-                "time": row["time"],
-                "value": float(row["Volume"]),
-                "color": f"{warna_naik}80" if row["Close"] >= row["Open"] else f"{warna_turun}80",
-            }
-            for row in df_js[["time", "Open", "Close", "Volume"]].to_dict(orient="records")
-        ]
-
-        candle_json = json.dumps(data_candle)
-        volume_json = json.dumps(data_volume)
-        div_id = f"chart_{chart_key}"
-
+    def render_tradingview_widget(simbol_tv: str, tinggi: int = 550, chart_key: str = "tv", tema: str = "dark"):
+        """Render TradingView Advanced Real-Time Chart Widget resmi.
+        Widget ini narik data historis & real-time-nya sendiri dari
+        TradingView — TIDAK memakai data OHLC dari Alpaca sama sekali."""
+        container_id = f"tradingview_{chart_key}"
         html = f"""
-        <div id="{div_id}" style="width:100%; height:{tinggi}px; background:{warna_bg_chart}; border-radius:8px; position:relative;">
-            <div id="{div_id}_legend" style="position:absolute; left:12px; top:8px; z-index:5;
-                 font-family:-apple-system,Segoe UI,Roboto,sans-serif; font-size:12.5px; color:#d1d4dc;
-                 background:rgba(19,23,34,0.72); padding:4px 10px; border-radius:6px; pointer-events:none;
-                 white-space:nowrap;"></div>
+        <div class="tradingview-widget-container" style="height:{tinggi}px;">
+            <div id="{container_id}" style="height:100%;"></div>
         </div>
-        <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-        <script>
-            (function() {{
-                const container = document.getElementById("{div_id}");
-                const legendEl = document.getElementById("{div_id}_legend");
-                const chart = LightweightCharts.createChart(container, {{
-                    width: container.clientWidth,
-                    height: {tinggi},
-                    layout: {{
-                        background: {{ type: "solid", color: "{warna_bg_chart}" }},
-                        textColor: "#d1d4dc",
-                    }},
-                    grid: {{
-                        vertLines: {{ color: "#2a2e39" }},
-                        horzLines: {{ color: "#2a2e39" }},
-                    }},
-                    crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
-                    rightPriceScale: {{ borderColor: "#2a2e39", scaleMargins: {{ top: 0.1, bottom: 0.25 }} }},
-                    timeScale: {{
-                        borderColor: "#2a2e39",
-                        timeVisible: false,
-                        rightOffset: 4,
-                        tickMarkFormatter: (time, tickMarkType, locale) => {{
-                            const bulanSingkat = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
-                            const d = new Date(time + "T00:00:00Z");
-                            switch (tickMarkType) {{
-                                case LightweightCharts.TickMarkType.Year:
-                                    return d.getUTCFullYear().toString();
-                                case LightweightCharts.TickMarkType.Month:
-                                    return bulanSingkat[d.getUTCMonth()];
-                                case LightweightCharts.TickMarkType.DayOfMonth:
-                                    return d.getUTCDate().toString();
-                                default:
-                                    return d.getUTCFullYear().toString();
-                            }}
-                        }},
-                    }},
-                    handleScroll: {{ mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true }},
-                    handleScale: {{ axisPressedMouseMove: true, mouseWheel: true, pinch: true }},
-                }});
-
-                const candleData = {candle_json};
-                const pctChangeByTime = {{}};
-                candleData.forEach(function(bar) {{ pctChangeByTime[bar.time] = bar.pctChange; }});
-
-                const candleSeries = chart.addCandlestickSeries({{
-                    upColor: "{warna_naik}", downColor: "{warna_turun}",
-                    borderUpColor: "{warna_naik}", borderDownColor: "{warna_turun}",
-                    wickUpColor: "{warna_naik}", wickDownColor: "{warna_turun}",
-                }});
-                candleSeries.setData(candleData);
-
-                const volumeSeries = chart.addHistogramSeries({{
-                    priceFormat: {{ type: "volume" }},
-                    priceScaleId: "vol",
-                }});
-                volumeSeries.setData({volume_json});
-
-                chart.priceScale("vol").applyOptions({{
-                    scaleMargins: {{ top: 0.82, bottom: 0 }},
-                    visible: false,
-                }});
-
-                chart.timeScale().fitContent();
-
-                function tampilkanLegend(bar, pct) {{
-                    if (!bar) {{ legendEl.innerHTML = ""; return; }}
-                    const naik = bar.close >= bar.open;
-                    const warna = naik ? "{warna_naik}" : "{warna_turun}";
-
-                    let htmlPersen = "";
-                    if (pct !== null && pct !== undefined) {{
-                        const naikVsSebelumnya = pct >= 0;
-                        const warnaPersen = naikVsSebelumnya ? "{warna_naik}" : "{warna_turun}";
-                        const panah = naikVsSebelumnya ? "▲" : "▼";
-                        htmlPersen = ' &nbsp; <span style="color:' + warnaPersen + '">' +
-                            panah + ' ' + Math.abs(pct).toFixed(2) + '%</span>';
-                    }}
-
-                    legendEl.innerHTML =
-                        '<b>{ticker}</b>' +
-                        ' &nbsp; O <span style="color:' + warna + '">' + bar.open.toFixed(2) + '</span>' +
-                        ' &nbsp; H <span style="color:' + warna + '">' + bar.high.toFixed(2) + '</span>' +
-                        ' &nbsp; L <span style="color:' + warna + '">' + bar.low.toFixed(2) + '</span>' +
-                        ' &nbsp; C <span style="color:' + warna + '">' + bar.close.toFixed(2) + '</span>' +
-                        htmlPersen;
-                }}
-                if (candleData.length > 0) {{
-                    const barTerakhir = candleData[candleData.length - 1];
-                    tampilkanLegend(barTerakhir, barTerakhir.pctChange);
-                }}
-                chart.subscribeCrosshairMove(param => {{
-                    if (!param || !param.time || !param.seriesData || !param.seriesData.get(candleSeries)) {{
-                        if (candleData.length > 0) {{
-                            const barTerakhir = candleData[candleData.length - 1];
-                            tampilkanLegend(barTerakhir, barTerakhir.pctChange);
-                        }}
-                        return;
-                    }}
-                    const barHover = param.seriesData.get(candleSeries);
-                    tampilkanLegend(barHover, pctChangeByTime[param.time]);
-                }});
-
-                new ResizeObserver(entries => {{
-                    if (entries.length === 0 || entries[0].target !== container) return;
-                    const newWidth = entries[0].contentRect.width;
-                    chart.applyOptions({{ width: newWidth }});
-                }}).observe(container);
-
-                const menu = document.createElement("div");
-                menu.style.cssText = "position:fixed; display:none; z-index:1000; background:#1e222d; " +
-                    "border:1px solid #2a2e39; border-radius:6px; padding:4px 0; " +
-                    "font-family:-apple-system,Segoe UI,Roboto,sans-serif; font-size:13px; color:#d1d4dc; " +
-                    "box-shadow:0 4px 14px rgba(0,0,0,0.45); min-width:210px;";
-                document.body.appendChild(menu);
-
-                function buatItemMenu(labelAwal) {{
-                    const item = document.createElement("div");
-                    item.textContent = labelAwal;
-                    item.style.cssText = "padding:8px 14px; cursor:pointer;";
-                    item.onmouseenter = () => item.style.background = "#2a2e39";
-                    item.onmouseleave = () => item.style.background = "transparent";
-                    menu.appendChild(item);
-                    return item;
-                }}
-                function buatPemisahMenu() {{
-                    const pemisah = document.createElement("div");
-                    pemisah.style.cssText = "height:1px; background:#2a2e39; margin:4px 0;";
-                    menu.appendChild(pemisah);
-                }}
-
-                buatItemMenu("Reset Skala Harga").onclick = () => {{
-                    chart.priceScale("right").applyOptions({{ autoScale: true }});
-                    menu.style.display = "none";
-                }};
-                buatItemMenu("Reset Skala Waktu").onclick = () => {{
-                    chart.timeScale().fitContent();
-                    menu.style.display = "none";
-                }};
-                buatItemMenu("Reset Tampilan (Semua)").onclick = () => {{
-                    chart.priceScale("right").applyOptions({{ autoScale: true }});
-                    chart.timeScale().fitContent();
-                    menu.style.display = "none";
-                }};
-
-                buatPemisahMenu();
-
-                let logScaleAktif = false;
-                const itemLog = buatItemMenu("Skala Logaritmik: Off");
-                itemLog.onclick = () => {{
-                    logScaleAktif = !logScaleAktif;
-                    chart.priceScale("right").applyOptions({{
-                        mode: logScaleAktif ? LightweightCharts.PriceScaleMode.Logarithmic : LightweightCharts.PriceScaleMode.Normal,
-                    }});
-                    itemLog.textContent = "Skala Logaritmik: " + (logScaleAktif ? "On" : "Off");
-                    menu.style.display = "none";
-                }};
-
-                buatPemisahMenu();
-
-                buatItemMenu("Unduh sebagai Gambar").onclick = () => {{
-                    const canvas = chart.takeScreenshot();
-                    const link = document.createElement("a");
-                    link.download = "{ticker.replace(':', '_')}_chart.png";
-                    link.href = canvas.toDataURL();
-                    link.click();
-                    menu.style.display = "none";
-                }};
-
-                container.addEventListener("contextmenu", (e) => {{
-                    e.preventDefault();
-                    const batasKanan = window.innerWidth - 220;
-                    const batasBawah = window.innerHeight - 220;
-                    menu.style.left = Math.min(e.clientX, batasKanan) + "px";
-                    menu.style.top = Math.min(e.clientY, batasBawah) + "px";
-                    menu.style.display = "block";
-                }});
-                document.addEventListener("click", () => {{ menu.style.display = "none"; }});
-            }})();
+        <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+        <script type="text/javascript">
+            new TradingView.widget({{
+                "autosize": false,
+                "width": "100%",
+                "height": {tinggi},
+                "symbol": "{simbol_tv}",
+                "interval": "D",
+                "timezone": "Etc/UTC",
+                "theme": "{tema}",
+                "style": "1",
+                "locale": "en",
+                "toolbar_bg": "#f1f3f6",
+                "enable_publishing": false,
+                "allow_symbol_change": true,
+                "hide_side_toolbar": false,
+                "container_id": "{container_id}"
+            }});
         </script>
         """
-        components.html(html, height=tinggi + 20, scrolling=False)
+        components.html(html, height=tinggi + 10, scrolling=False)
 
 
     # ============================================================
@@ -1124,31 +872,21 @@ with col_main:
         st.stop()
 
     # ============================================================
-    # 8. Ambil data semua saham/crypto
-    #    Catatan: tier gratis Polygon dibatasi 5 request/menit — kalau
-    #    daftar bandingannya panjang, ambil datanya bisa butuh waktu
-    #    (ada jeda antar-request otomatis di bawah).
+    # 8. Ambil data semua saham/crypto (dibatch, bukan loop per-ticker)
     # ============================================================
-    with st.spinner(f"Mengambil data untuk {len(daftar_saham)} saham/crypto dari Polygon.io..."):
-        data_semua = {}
-        gagal = {}
-        for i, kode in enumerate(daftar_saham):
-            d = ambil_rasio_saham(kode)
-            if d:
-                data_semua[kode] = d
-            else:
-                gagal[kode] = "Data tidak tersedia (cek API key/plan, atau kode ticker salah)."
-            if i < len(daftar_saham) - 1:
-                time.sleep(0.3)  # jeda kecil biar lebih ramah ke rate limit tier gratis
+    with st.spinner(f"Mengambil data untuk {len(daftar_saham)} saham/crypto dari Alpaca..."):
+        data_semua = bangun_ringkasan(daftar_saham)
 
+    gagal = [k for k in daftar_saham if k not in data_semua]
     if gagal:
-        st.error("Gagal mengambil data untuk: " + ", ".join(f"{k} ({v})" for k, v in gagal.items()))
+        st.error("Gagal mengambil data untuk: " + ", ".join(gagal))
         st.caption(
-            "Tier gratis Polygon.io dibatasi 5 request/menit dan data end-of-day (bukan real-time). "
-            "Kalau baru saja menambahkan banyak ticker sekaligus, coba tunggu ~1 menit lalu klik 'Coba lagi'."
+            "Cek lagi API Key Alpaca kamu, atau pastikan kode ticker/pair-nya benar "
+            "(saham AS pakai kode biasa mis. AAPL, crypto pakai format SIMBOL/USD mis. BTC/USD)."
         )
         if st.button("Coba lagi", key="btn_coba_lagi_gagal"):
-            ambil_rasio_saham.clear()
+            ambil_snapshot_batch.clear()
+            ambil_52w_high_low_batch.clear()
             st.rerun()
 
     if len(data_semua) < 1:
@@ -1157,18 +895,6 @@ with col_main:
 
     def fmt_rp(v):
         return f"{v:,.2f}" if v is not None else "N/A"
-
-
-    def fmt_cap(v):
-        if v is None:
-            return "N/A"
-        if v >= 1e12:
-            return f"{v/1e12:.2f} T"
-        if v >= 1e9:
-            return f"{v/1e9:.2f} B"
-        if v >= 1e6:
-            return f"{v/1e6:.2f} M"
-        return f"{v:,.0f}"
 
 
     # ============================================================
@@ -1231,33 +957,15 @@ with col_main:
 
 
     def buat_kartu_saham(d: dict) -> str:
-        if d["Tipe"] == "Crypto":
-            harga_kemarin = d.get("Harga Kemarin")
-            persen = None
-            if harga_kemarin:
-                persen = (d["Harga"] - harga_kemarin) / harga_kemarin * 100
-            persen_txt = f"{persen:+.2f}%" if persen is not None else "N/A"
-            return (
-                '<div class="stock-card">'
-                f'<h4>{d["Nama"]}</h4>'
-                f'<span class="ticker-tag">{d["Ticker"]}</span>'
-                '<div class="metric-row">'
-                '<span class="metric-label">Harga</span>'
-                f'<span class="metric-value">{d["Mata Uang"]} {fmt_rp(d["Harga"])}</span>'
-                '</div>'
-                '<div class="metric-row">'
-                '<span class="metric-label">Perubahan</span>'
-                f'<span class="metric-value">{persen_txt}</span>'
-                '</div>'
-                '<div class="metric-row">'
-                '<span class="metric-label">Rasio Fundamental</span>'
-                '<span class="metric-value">N/A (Crypto)</span>'
-                '</div>'
-                '</div>'
-            )
-        per_val = d['PER (Trailing)'] if d['PER (Trailing)'] else 'N/A'
-        pbv_val = d['PBV'] if d['PBV'] else 'N/A'
-        roe_val = d['ROE (%)'] if d['ROE (%)'] else 'N/A'
+        harga_kemarin = d.get("Harga Kemarin")
+        persen = None
+        if harga_kemarin:
+            persen = (d["Harga"] - harga_kemarin) / harga_kemarin * 100
+        persen_txt = f"{persen:+.2f}%" if persen is not None else "N/A"
+        h52 = d.get("52W High")
+        l52 = d.get("52W Low")
+        h52_txt = f"{h52:,.0f}" if h52 is not None else "N/A"
+        l52_txt = f"{l52:,.0f}" if l52 is not None else "N/A"
         return (
             '<div class="stock-card">'
             f'<h4>{d["Nama"]}</h4>'
@@ -1267,20 +975,16 @@ with col_main:
             f'<span class="metric-value">{d["Mata Uang"]} {fmt_rp(d["Harga"])}</span>'
             '</div>'
             '<div class="metric-row">'
-            '<span class="metric-label">Market Cap</span>'
-            f'<span class="metric-value">{fmt_cap(d["Market Cap"])}</span>'
+            '<span class="metric-label">Perubahan</span>'
+            f'<span class="metric-value">{persen_txt}</span>'
             '</div>'
             '<div class="metric-row">'
-            '<span class="metric-label">PER</span>'
-            f'<span class="metric-value">{per_val} x</span>'
+            '<span class="metric-label">52W High/Low</span>'
+            f'<span class="metric-value">{h52_txt} / {l52_txt}</span>'
             '</div>'
             '<div class="metric-row">'
-            '<span class="metric-label">PBV</span>'
-            f'<span class="metric-value">{pbv_val} x</span>'
-            '</div>'
-            '<div class="metric-row">'
-            '<span class="metric-label">ROE</span>'
-            f'<span class="metric-value">{roe_val} %</span>'
+            '<span class="metric-label">Rasio Fundamental</span>'
+            '<span class="metric-value">N/A</span>'
             '</div>'
             '</div>'
         )
@@ -1293,17 +997,19 @@ with col_main:
     st.markdown("---")
 
     # ============================================================
-    # 9b. Grafik Pergerakan Harga (data Polygon.io)
+    # 9b. Grafik Pergerakan Harga (TradingView Widget)
     # ============================================================
-    st.subheader("Pergerakan Harga")
+    st.subheader("Pergerakan Harga (TradingView Widget)")
     st.caption(
-        "Data harga bersumber dari Polygon.io. Pada tier gratis, data bersifat end-of-day "
-        "(bukan streaming real-time)."
+        "Grafik ini adalah widget resmi TradingView yang narik data historis & real-time-nya "
+        "langsung dari TradingView — bukan dari Alpaca. Tebakan simbol TradingView dibuat "
+        "otomatis dari exchange yang tercatat di Alpaca; kalau grafiknya kosong/salah emiten, "
+        "edit kotak simbol di bawah chart-nya secara manual."
     )
 
     if AUTOREFRESH_TERSEDIA:
         st_autorefresh(interval=10 * 60 * 1000, key="autorefresh_harga")
-        st.caption("Auto-refresh tiap 10 menit — aktif otomatis.")
+        st.caption("Auto-refresh data ringkasan tiap 10 menit — aktif otomatis.")
     else:
         st.caption("Auto-refresh butuh: `pip install streamlit-autorefresh`")
 
@@ -1320,79 +1026,12 @@ with col_main:
         key="tickers_chart_terpilih",
     )
 
-    col_tf, col_refresh = st.columns([3, 1])
-    with col_tf:
-        timeframe_terpilih = st.radio(
-            "Timeframe candle",
-            list(TIMEFRAME_HARGA.keys()),
-            horizontal=True,
-            key="timeframe_terpilih",
-        )
-    konfig_tf = TIMEFRAME_HARGA[timeframe_terpilih]
+    col_refresh, _ = st.columns([1, 3])
     with col_refresh:
-        st.write("")
-        st.write("")
-        if st.button("Refresh Sekarang", key="btn_refresh_manual", use_container_width=True):
-            ambil_data_harga.clear()
+        if st.button("Refresh Data Ringkasan", key="btn_refresh_manual", use_container_width=True):
+            ambil_snapshot_batch.clear()
+            ambil_52w_high_low_batch.clear()
             st.rerun()
-
-    LABEL_PERUBAHAN = {
-        "Harian": "candle sebelumnya",
-        "Mingguan": "candle sebelumnya",
-        "Bulanan": "candle sebelumnya",
-        "Tahunan": "candle sebelumnya",
-    }
-
-
-    def render_satu_panel_chart(ticker_chart: str, tinggi_chart: int):
-        with st.spinner(f"Mengambil data harga {label_tampil_ticker(ticker_chart)}..."):
-            data_harga = ambil_data_harga(
-                ticker_chart, konfig_tf["multiplier"], konfig_tf["timespan"], konfig_tf["rentang_hari"],
-            )
-
-        if data_harga is None or data_harga.empty or len(data_harga) <= 1:
-            st.warning(f"Data harga untuk **{label_tampil_ticker(ticker_chart)}** pada timeframe **{timeframe_terpilih}** tidak tersedia.")
-            return
-
-        harga_akhir = data_harga["Close"].iloc[-1]
-        harga_awal = data_harga["Close"].iloc[-2]
-        perubahan = harga_akhir - harga_awal
-        persen = (perubahan / harga_awal * 100) if harga_awal else 0
-
-        naik = perubahan >= 0
-        warna_perubahan = warna_candle_naik if naik else warna_candle_turun
-        tanda = "+" if naik else ""
-        nama_perusahaan = data_semua.get(ticker_chart, {}).get("Nama", ticker_chart)
-        mata_uang = data_semua.get(ticker_chart, {}).get("Mata Uang", "")
-
-        st.markdown(
-            f"""
-            <div style="margin-bottom:6px;">
-                <div style="font-size:24px; font-weight:700; letter-spacing:-0.01em; line-height:1.2;">
-                    {nama_perusahaan}
-                    <span style="font-size:15px; font-weight:500; color:#8a8f99;">({label_tampil_ticker(ticker_chart)})</span>
-                </div>
-                <div style="display:flex; align-items:baseline; gap:12px; margin-top:4px;">
-                    <span style="font-size:38px; font-weight:800; letter-spacing:-0.02em;">
-                        {mata_uang} {harga_akhir:,.2f}
-                    </span>
-                    <span style="font-size:17px; font-weight:600; color:{warna_perubahan};">
-                        {tanda}{perubahan:,.2f} ({tanda}{persen:.2f}%)
-                    </span>
-                </div>
-                <div style="font-size:12.5px; color:#8a8f99; margin-top:2px;">
-                    vs {LABEL_PERUBAHAN[timeframe_terpilih]}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        render_tradingview_chart(
-            data_harga, ticker_chart, tinggi=tinggi_chart, chart_key=f"{ticker_chart.replace(':', '_')}_{timeframe_terpilih}",
-            warna_naik=warna_candle_naik, warna_turun=warna_candle_turun, warna_bg_chart=warna_bg_chart,
-        )
-
 
     if not tickers_dipilih:
         st.info("Pilih atau cari saham/crypto di atas untuk melihat grafik pergerakan harganya.")
@@ -1403,15 +1042,22 @@ with col_main:
             kolom = st.columns(len(baris_ticker)) if len(baris_ticker) > 1 else [st.container()]
             for kol, tk in zip(kolom, baris_ticker):
                 with kol:
-                    render_satu_panel_chart(tk, tinggi_per_chart)
+                    d = data_semua.get(tk, {})
+                    st.markdown(f"**{d.get('Nama', tk)}** ({label_tampil_ticker(tk)})")
+                    key_override = f"simbol_tv_override_{tk}"
+                    default_simbol = d.get("Simbol TradingView", tebak_simbol_tradingview(tk))
+                    simbol_tv = st.text_input(
+                        "Simbol TradingView", value=default_simbol, key=key_override,
+                        help="Format: EXCHANGE:SIMBOL, contoh NASDAQ:AAPL atau COINBASE:BTCUSD.",
+                    )
+                    render_tradingview_widget(
+                        simbol_tv, tinggi=tinggi_per_chart,
+                        chart_key=f"{tk.replace('/', '_')}", tema=tema_chart_tv,
+                    )
 
         st.caption(
-            "**Scroll** = zoom in/out. **Drag di area candle** = geser data. "
-            "**Drag di sumbu harga (kanan)** = perbesar/perkecil skala harga. "
-            "**Drag di sumbu tanggal (bawah)** = perbesar/perkecil skala waktu. "
-            "**Klik kanan di chart** untuk menu reset skala harga/waktu, skala logaritmik, dan unduh gambar chart. "
-            "Arahkan kursor ke candle mana pun untuk lihat detail Open/High/Low/Close & persentase perubahannya. "
-            "Bisa pilih sampai 4 saham/crypto sekaligus untuk dibandingkan berdampingan (split-screen)."
+            "Bisa pilih sampai 4 saham/crypto sekaligus untuk dibandingkan berdampingan (split-screen). "
+            "Semua kontrol zoom, indikator teknikal, dan ganti timeframe ada langsung di dalam widget TradingView-nya."
         )
 
     st.markdown("---")
@@ -1419,11 +1065,11 @@ with col_main:
     # ============================================================
     # 10. Tabel & Grafik Perbandingan per Kategori Rasio
     # ============================================================
-    st.subheader("Perbandingan Rasio Keuangan Lengkap")
+    st.subheader("Perbandingan Rasio Keuangan")
     st.caption(
-        "Rasio fundamental (PER, PBV, ROE, dsb) hanya berlaku untuk saham — akan tampil kosong untuk crypto. "
-        "Beberapa rasio (Beta, PEG Ratio, EV/EBITDA, EV/Revenue, Quick Ratio, PER/EPS Forward) belum tersedia "
-        "langsung dari Polygon.io pada plan dasar sehingga tampil N/A."
+        "Alpaca Market Data API tidak menyediakan data fundamental/laporan keuangan, jadi semua "
+        "rasio di bawah ini (kecuali 52W High/Low, yang murni data harga) tampil **N/A** sebagai "
+        "placeholder untuk pengembangan berikutnya."
     )
 
     KATEGORI_RASIO = {
@@ -1442,34 +1088,34 @@ with col_main:
     PALET_WARNA = px.colors.qualitative.Set2
 
     PENJELASAN_INDIKATOR = {
-        "PER (Trailing)": "Price to Earnings Ratio berdasarkan laba 12 bulan terakhir. Menunjukkan berapa kali investor membayar harga saham dibanding laba bersih per saham. Semakin rendah, semakin 'murah' saham relatif terhadap labanya — tapi harus dibandingkan dengan saham sejenis.",
-        "PER (Forward)": "Sama seperti PER Trailing, tapi memakai estimasi laba 12 bulan ke depan. Belum tersedia dari Polygon.io pada plan dasar sehingga tampil N/A.",
-        "PBV": "Price to Book Value — harga saham dibanding nilai buku (aset bersih) per saham. PBV di bawah 1 berarti saham diperdagangkan di bawah nilai aset bersihnya.",
-        "PEG Ratio": "PER dibagi tingkat pertumbuhan laba. Butuh estimasi pertumbuhan forward yang belum tersedia dari Polygon.io pada plan dasar sehingga tampil N/A.",
-        "Price/Sales": "Harga saham (via market cap) dibanding total pendapatan. Berguna untuk menilai perusahaan yang belum untung tapi pendapatannya besar.",
-        "EV/EBITDA": "Enterprise Value dibanding EBITDA. Belum dihitung otomatis di versi ini karena field EBITDA & enterprise value tidak selalu lengkap tersedia dari Polygon.io.",
-        "EV/Revenue": "Enterprise Value dibanding total pendapatan. Sama seperti EV/EBITDA, belum dihitung otomatis di versi ini.",
-        "ROE (%)": "Return on Equity — seberapa efisien perusahaan menghasilkan laba dari modal pemegang saham.",
-        "ROA (%)": "Return on Assets — seberapa efisien perusahaan menghasilkan laba dari seluruh asetnya.",
-        "Net Profit Margin (%)": "Persentase laba bersih dari setiap dolar pendapatan.",
-        "Gross Margin (%)": "Persentase laba kotor (pendapatan dikurangi harga pokok penjualan) dari total pendapatan.",
-        "Operating Margin (%)": "Persentase laba operasional (sebelum bunga & pajak) dari pendapatan.",
-        "EPS (Trailing)": "Earning per Share — laba bersih 12 bulan terakhir dibagi jumlah saham beredar.",
-        "EPS (Forward)": "EPS berdasarkan estimasi laba ke depan. Belum tersedia dari Polygon.io pada plan dasar sehingga tampil N/A.",
-        "Current Ratio": "Aset lancar dibanding kewajiban lancar. Mengukur kemampuan bayar utang jangka pendek.",
-        "Quick Ratio": "Mirip Current Ratio tapi persediaan dikeluarkan. Belum dihitung otomatis karena rincian inventory tidak selalu tersedia dari Polygon.io.",
-        "DER (Debt to Equity)": "Total kewajiban dibanding ekuitas. Semakin tinggi, semakin besar perusahaan dibiayai utang dibanding modal sendiri.",
-        "Revenue Growth (%)": "Persentase pertumbuhan pendapatan tahunan dibanding tahun sebelumnya (YoY), dihitung dari 2 laporan tahunan terakhir.",
-        "Earnings Growth (%)": "Persentase pertumbuhan laba bersih tahunan dibanding tahun sebelumnya (YoY).",
-        "Dividend Yield (%)": "Total dividen tunai 12 bulan terakhir dibanding harga saham saat ini.",
-        "Payout Ratio (%)": "Perkiraan persentase laba per saham yang dibagikan sebagai dividen tunai 12 bulan terakhir.",
-        "Beta": "Ukuran volatilitas saham dibanding pasar. Tidak disediakan langsung oleh Polygon.io reference data sehingga tampil N/A.",
-        "52W High": "Harga tertinggi dalam ~52 minggu terakhir, dihitung dari data harian Polygon.io.",
-        "52W Low": "Harga terendah dalam ~52 minggu terakhir, dihitung dari data harian Polygon.io.",
+        "PER (Trailing)": "Price to Earnings Ratio berdasarkan laba 12 bulan terakhir. Belum tersedia — Alpaca Market Data API tidak menyediakan data laporan keuangan.",
+        "PER (Forward)": "PER berdasarkan estimasi laba ke depan. Belum tersedia dari Alpaca.",
+        "PBV": "Price to Book Value. Belum tersedia — butuh data ekuitas/nilai buku yang tidak disediakan Alpaca.",
+        "PEG Ratio": "PER dibagi tingkat pertumbuhan laba. Belum tersedia dari Alpaca.",
+        "Price/Sales": "Harga saham dibanding pendapatan. Belum tersedia — butuh data pendapatan perusahaan.",
+        "EV/EBITDA": "Enterprise Value dibanding EBITDA. Belum tersedia dari Alpaca.",
+        "EV/Revenue": "Enterprise Value dibanding pendapatan. Belum tersedia dari Alpaca.",
+        "ROE (%)": "Return on Equity. Belum tersedia — butuh data laba bersih & ekuitas dari laporan keuangan.",
+        "ROA (%)": "Return on Assets. Belum tersedia dari Alpaca.",
+        "Net Profit Margin (%)": "Persentase laba bersih dari pendapatan. Belum tersedia dari Alpaca.",
+        "Gross Margin (%)": "Persentase laba kotor dari pendapatan. Belum tersedia dari Alpaca.",
+        "Operating Margin (%)": "Persentase laba operasional dari pendapatan. Belum tersedia dari Alpaca.",
+        "EPS (Trailing)": "Laba bersih 12 bulan terakhir per saham. Belum tersedia dari Alpaca.",
+        "EPS (Forward)": "EPS berdasarkan estimasi laba ke depan. Belum tersedia dari Alpaca.",
+        "Current Ratio": "Aset lancar dibanding kewajiban lancar. Belum tersedia — butuh data neraca keuangan.",
+        "Quick Ratio": "Mirip Current Ratio tapi persediaan dikeluarkan. Belum tersedia dari Alpaca.",
+        "DER (Debt to Equity)": "Total kewajiban dibanding ekuitas. Belum tersedia dari Alpaca.",
+        "Revenue Growth (%)": "Pertumbuhan pendapatan tahunan (YoY). Belum tersedia dari Alpaca.",
+        "Earnings Growth (%)": "Pertumbuhan laba bersih tahunan (YoY). Belum tersedia dari Alpaca.",
+        "Dividend Yield (%)": "Total dividen tunai 12 bulan terakhir dibanding harga saham. Belum tersedia dari Alpaca.",
+        "Payout Ratio (%)": "Persentase laba per saham yang dibagikan sebagai dividen. Belum tersedia dari Alpaca.",
+        "Beta": "Ukuran volatilitas saham dibanding pasar. Belum dihitung di versi ini (bisa dihitung manual dari data harga historis vs indeks acuan, tapi belum diimplementasikan).",
+        "52W High": "Harga tertinggi dalam ~52 minggu terakhir, dihitung dari data harian Alpaca.",
+        "52W Low": "Harga terendah dalam ~52 minggu terakhir, dihitung dari data harian Alpaca.",
     }
 
 
-    def buat_grafik_indikator(nama_indikator: str, df_kat: pd.DataFrame, key_kategori: str):
+    def buat_grafik_indikator(nama_indikator: str, df_kat: pd.DataFrame):
         baris = df_kat[df_kat["Indikator"] == nama_indikator]
         if baris.empty:
             return None
@@ -1551,7 +1197,7 @@ with col_main:
             if indikator_dipilih:
                 grafik_kolom = st.columns(2)
                 for i, ind in enumerate(indikator_dipilih):
-                    fig = buat_grafik_indikator(ind, df_kat, nama_kategori)
+                    fig = buat_grafik_indikator(ind, df_kat)
                     target_kolom = grafik_kolom[i % 2]
                     with target_kolom:
                         if fig:
@@ -1574,7 +1220,7 @@ with col_main:
 # ============================================================
 # 9c. Asisten AI — panel persisten di kolom kanan
 # ============================================================
-PATH_MEMORI_AI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memori_ai_saham_polygon.json")
+PATH_MEMORI_AI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memori_ai_saham_alpaca.json")
 
 
 def muat_memori_ai():
@@ -1595,16 +1241,17 @@ def simpan_memori_ai(riwayat: list, catatan_preferensi: str):
         pass
 
 
-SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham AS & crypto di dalam sebuah aplikasi pembanding. Tugasmu membantu pengguna memahami data rasio keuangan dan harga yang sedang mereka bandingkan.
+SYSTEM_PROMPT_SAHAM = """Kamu adalah asisten analisis saham AS & crypto di dalam sebuah aplikasi pembanding. Tugasmu membantu pengguna memahami data harga yang sedang mereka bandingkan.
 
-Data saham/crypto yang sedang dibandingkan pengguna saat ini:
+Data saham/crypto yang sedang dibandingkan pengguna saat ini (data harga dari Alpaca Market Data API):
 {konteks}
 {blok_preferensi}
 {blok_dokumen}
 Instruksi:
-- Jawab berdasarkan data di atas, jangan mengarang angka yang tidak ada. Kalau suatu rasio bernilai N/A (misalnya karena crypto tidak punya laporan keuangan, atau data belum tersedia dari Polygon.io), katakan terus terang bahwa datanya tidak tersedia, jangan menebak.
+- PENTING: aplikasi ini TIDAK punya data fundamental/laporan keuangan (PER, PBV, ROE, EPS, dividend, dsb) — semua rasio itu N/A. Kalau pengguna tanya soal itu, katakan terus terang datanya belum tersedia di aplikasi ini, jangan mengarang angka.
+- Kamu cuma punya data harga terkini, harga kemarin, dan 52-week high/low. Analisis dari situ (posisi harga relatif terhadap 52W high/low, arah pergerakan sederhana), plus wawasan umum yang kamu tahu soal perusahaan/coin tersebut secara kualitatif — tapi jelaskan mana yang data aktual vs pengetahuan umum.
 - Berikan analisis yang seimbang: sebutkan potensi kelebihan DAN risiko/kekurangan, bukan cuma satu sisi.
-- Boleh memberi pandangan soal valuasi (relatif mahal/murah), tren, dan rasio, tapi ini BUKAN rekomendasi beli/jual yang pasti — selalu jelaskan bahwa keputusan akhir ada di tangan pengguna.
+- Ini BUKAN rekomendasi beli/jual yang pasti — selalu jelaskan bahwa keputusan akhir ada di tangan pengguna.
 - Jangan pernah mengklaim kepastian arah harga di masa depan, apalagi untuk crypto yang sangat volatil.
 - Kalau ada catatan preferensi pengguna di atas, sesuaikan gaya jawabanmu dengan itu.
 - Jawab dalam Bahasa Indonesia, ringkas dan jelas, boleh pakai bullet point kalau perlu.
@@ -1614,15 +1261,15 @@ Instruksi:
 def bangun_konteks_saham(data_semua: dict) -> str:
     baris = []
     for kode, d in data_semua.items():
-        if d["Tipe"] == "Crypto":
-            baris.append(f"- {d['Nama']} ({kode}): Harga {d['Mata Uang']} {d['Harga']} (crypto, tidak ada rasio fundamental)")
-        else:
-            baris.append(
-                f"- {d['Nama']} ({kode}): Harga {d['Mata Uang']} {d['Harga']}, "
-                f"PER {d['PER (Trailing)']}, PBV {d['PBV']}, ROE {d['ROE (%)']}%, "
-                f"DER {d['DER (Debt to Equity)']}, Dividend Yield {d['Dividend Yield (%)']}%, "
-                f"Revenue Growth {d['Revenue Growth (%)']}%, EPS {d['EPS (Trailing)']}"
-            )
+        h52 = d.get("52W High")
+        l52 = d.get("52W Low")
+        h52_txt = f"{h52}" if h52 is not None else "N/A"
+        l52_txt = f"{l52}" if l52 is not None else "N/A"
+        baris.append(
+            f"- {d['Nama']} ({kode}, {d['Tipe']}): Harga {d['Mata Uang']} {d['Harga']}, "
+            f"Harga kemarin {d.get('Harga Kemarin')}, 52W High {h52_txt}, 52W Low {l52_txt} "
+            f"(rasio fundamental: N/A, tidak tersedia dari Alpaca)"
+        )
     return "\n".join(baris)
 
 
@@ -1635,10 +1282,10 @@ if "catatan_preferensi_ai" not in st.session_state:
     st.session_state.catatan_preferensi_ai = ""
 
 SARAN_PROMPT_AI = [
-    ("📊", "Bandingkan valuasi saham-saham ini"),
+    ("📊", "Bandingkan posisi harga saham-saham ini vs 52W high/low"),
     ("⚠️", "Apa risiko utama dari saham/crypto ini?"),
-    ("💰", "Mana yang dividennya paling menarik?"),
-    ("📈", "Bagaimana kesehatan finansialnya?"),
+    ("💡", "Jelaskan model bisnis masing-masing secara umum"),
+    ("📈", "Mana yang pergerakan harganya paling volatil?"),
 ]
 
 
@@ -1816,7 +1463,7 @@ with st.container(key="panel_asisten_ai"):
 
         with st.expander("Preferensi & Data Tambahan"):
             st.caption(
-                "Tulis gaya analisis yang kamu suka (mis. 'fokus ke dividend yield', 'jelasin singkat pakai bullet'). "
+                "Tulis gaya analisis yang kamu suka (mis. 'fokus ke risiko volatilitas', 'jelasin singkat pakai bullet'). "
                 "Ini tersimpan permanen dan otomatis dipakai AI di setiap obrolan berikutnya."
             )
             catatan_baru = st.text_area(
