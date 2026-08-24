@@ -270,6 +270,7 @@ def tanya_ai(system_prompt: str, riwayat_chat: list) -> str:
 #    Semuanya diletakkan satu folder dengan file utama (bukan di dalam pages/).
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @st.cache_resource(show_spinner=False)
@@ -429,7 +430,10 @@ def muat_portofolio():
 
 
 def simpan_portofolio(df: pd.DataFrame):
-    df.to_csv(PATH_PORTOFOLIO, index=False)
+    try:
+        df.to_csv(PATH_PORTOFOLIO, index=False)
+    except Exception as e:
+        st.warning(f"Gagal menyimpan portofolio ke file ({e}) — perubahan tetap berlaku untuk sesi ini saja.")
 
 
 if "portofolio" not in st.session_state:
@@ -460,7 +464,10 @@ def muat_ledger_modal():
 
 
 def simpan_ledger_modal(df: pd.DataFrame):
-    df.to_csv(PATH_LEDGER_MODAL, index=False)
+    try:
+        df.to_csv(PATH_LEDGER_MODAL, index=False)
+    except Exception as e:
+        st.warning(f"Gagal menyimpan riwayat modal ke file ({e}) — perubahan tetap berlaku untuk sesi ini saja.")
 
 
 def catat_transaksi_modal(jenis: str, keterangan: str, jumlah: float):
