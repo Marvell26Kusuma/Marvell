@@ -648,6 +648,7 @@ def render_grafik_performa(seri_ekuitas: pd.Series):
     persen = (perubahan / nilai_awal * 100) if nilai_awal else 0.0
     naik = perubahan >= 0
     warna = "#26a69a" if naik else "#ef5350"
+    warna_fill = "rgba(38,166,154,0.15)" if naik else "rgba(239,83,80,0.15)"
     tanda = "+" if naik else ""
 
     st.markdown(
@@ -669,7 +670,7 @@ def render_grafik_performa(seri_ekuitas: pd.Series):
     fig.add_trace(go.Scatter(
         x=seri_tampil.index, y=seri_tampil.values, mode="lines",
         line=dict(color=warna, width=2),
-        fill="tozeroy", fillcolor=f"{warna}26",
+        fill="tozeroy", fillcolor=warna_fill,
         hovertemplate="%{x|%d %b %Y}<br>Rp %{y:,.0f}<extra></extra>",
     ))
     fig.update_layout(
