@@ -338,9 +338,10 @@ def bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang, s
             f"Rp {saldo_tersedia:,.0f}."
         )
     baris_teks = [
-        f"- {item['Ticker']} ({item['Nama']}): {item['Jumlah']:,.0f} lembar, "
-        f"harga beli {item['Harga Beli']:,.0f}, harga sekarang {item['Harga Sekarang']}, "
-        f"nilai sekarang {item['Nilai Sekarang']}, untung/rugi {item['Untung/Rugi']} ({item['Persentase']})"
+        f"- {item['Ticker']} ({item['Nama']}, {item['Kelas Aset']}): {item['Jumlah']:,.0f} lembar, "
+        f"harga beli {item['Mata Uang']} {item['Harga Beli']:,.2f}, harga sekarang {item['Mata Uang']} {item['Harga Sekarang']}, "
+        f"nilai sekarang Rp {item['Nilai Sekarang']}, untung/rugi Rp {item['Untung/Rugi']} ({item['Persentase']}) "
+        f"[nilai & untung-rugi sudah dikonversi ke Rupiah kalau mata uang aslinya bukan IDR]"
         for item in baris_tampil
     ]
     ringkasan = (
@@ -518,6 +519,51 @@ def render_kartu_ringkasan_modal(saldo_tersedia, invested, jumlah_posisi, pnl, p
 
 
 # ============================================================
+# 3b. Kurs USD/IDR & klasifikasi kelas aset — dibutuhkan karena harga
+#    saham AS & crypto ditarik dari yfinance dalam USD, sedangkan
+#    Trading Balance/Invested/Total Equity di app ini dalam Rupiah.
+# ============================================================
+USD_IDR_TICKER = "USDIDR=X"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def ambil_kurs_usd_idr_terkini():
+    try:
+        info = yf.Ticker(USD_IDR_TICKER, session=dapatkan_sesi_yf()).info
+        kurs = info.get("regularMarketPrice") or info.get("currentPrice")
+        return float(kurs) if kurs else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def ambil_mata_uang_ticker(ticker: str):
+    try:
+        info = yf.Ticker(ticker, session=dapatkan_sesi_yf()).info
+        return info.get("currency") or "IDR"
+    except Exception:
+        return "IDR"
+
+
+def klasifikasi_aset(ticker: str) -> str:
+    t = ticker.upper()
+    if t.endswith(".JK"):
+        return "Saham Indonesia"
+    if t.endswith("-USD") or t.endswith("-USDT"):
+        return "Crypto"
+    return "Saham AS / Global"
+
+
+def konversi_ke_idr(nilai: float, mata_uang: str, kurs_usd_idr) -> float:
+    """Konversi nilai (harga/modal/dsb) ke Rupiah. Cuma menangani USD -> IDR
+    (kasus utama: saham AS & crypto dari yfinance keduanya dikutip dalam USD);
+    mata uang lain diasumsikan sudah Rupiah / tidak dikonversi."""
+    if mata_uang == "USD" and kurs_usd_idr:
+        return nilai * kurs_usd_idr
+    return nilai
+
+
+# ============================================================
 # 4. Fetch harga terkini (cache 10 menit)
 # ============================================================
 @st.cache_data(ttl=600, show_spinner=False)
@@ -575,12 +621,24 @@ def bangun_kurva_ekuitas(portofolio_df: pd.DataFrame, ledger_df: pd.DataFrame) -
     indeks_tanggal = pd.date_range(tanggal_mulai, tanggal_akhir, freq="D")
 
     nilai_posisi = pd.Series(0.0, index=indeks_tanggal)
+    kurs_historis = ambil_histori_harga(USD_IDR_TICKER)
+    kurs_historis_harian = (
+        kurs_historis.reindex(indeks_tanggal).ffill().bfill() if kurs_historis is not None else None
+    )
+
     if not portofolio_df.empty:
         for ticker, grup in portofolio_df.groupby("Ticker"):
             harga = ambil_histori_harga(ticker)
             if harga is None:
                 continue
             harga_harian = harga.reindex(indeks_tanggal).ffill().bfill()
+
+            # Saham/crypto yang dikutip yfinance dalam USD (saham AS, crypto)
+            # dikonversi ke Rupiah pakai kurs USD/IDR historis per hari,
+            # supaya nyambung sama posisi saham IDX yang udah Rupiah.
+            mata_uang_ticker = ambil_mata_uang_ticker(ticker)
+            if mata_uang_ticker == "USD" and kurs_historis_harian is not None:
+                harga_harian = harga_harian * kurs_historis_harian
 
             lembar_kumulatif = pd.Series(0.0, index=indeks_tanggal)
             for _, baris in grup.iterrows():
@@ -868,21 +926,43 @@ with col_main:
             pilihan_label = st.selectbox("Saham", LABEL_SEMUA_SAHAM, index=None, placeholder="Ketik nama atau kode untuk mencari...")
             ticker_baru = pilihan_label.split(" — ")[0] if pilihan_label else None
         else:
-            ticker_baru = st.text_input("Kode ticker", placeholder="mis. BBCA.JK atau AAPL")
+            ticker_baru = st.text_input("Kode ticker", placeholder="mis. BBCA.JK, AAPL, atau BTC-USD (crypto)")
+
+        mata_uang_baru = ambil_mata_uang_ticker(ticker_baru) if ticker_baru else "IDR"
+        label_harga = f"Harga beli per lembar ({mata_uang_baru})" if mata_uang_baru != "IDR" else "Harga beli per lembar"
 
         col1, col2, col3 = st.columns(3)
         with col1:
             jumlah_baru = st.number_input("Jumlah lembar saham", min_value=0, step=1, value=0)
         with col2:
-            harga_beli_baru = st.number_input("Harga beli per lembar", min_value=0.0, step=1.0, value=0.0)
+            harga_beli_baru = st.number_input(label_harga, min_value=0.0, step=1.0, value=0.0)
         with col3:
             tanggal_beli_baru = st.date_input("Tanggal beli", value=date.today())
+
+        kurs_baru = None
+        if mata_uang_baru == "USD" and ticker_baru:
+            kurs_baru = ambil_kurs_usd_idr_terkini()
+            if kurs_baru:
+                st.caption(
+                    f"Kurs USD/IDR saat ini: Rp {kurs_baru:,.0f}. Modal & Trading Balance akan "
+                    f"dicatat dalam Rupiah hasil konversi ({mata_uang_baru} × kurs)."
+                )
+            else:
+                st.warning(
+                    "Gagal mengambil kurs USD/IDR otomatis dari Yahoo Finance. Masukkan kurs manual "
+                    "di bawah supaya konversi ke Rupiah tetap akurat."
+                )
+                kurs_baru = st.number_input(
+                    "Kurs USD/IDR manual", min_value=0.0, step=100.0, value=0.0, key="kurs_manual_tambah",
+                )
 
         if st.button("Tambah ke Portofolio", type="primary"):
             if not ticker_baru:
                 st.warning("Pilih atau ketik kode saham terlebih dahulu.")
             elif jumlah_baru <= 0 or harga_beli_baru <= 0:
                 st.warning("Jumlah lembar dan harga beli harus lebih dari 0.")
+            elif mata_uang_baru == "USD" and not kurs_baru:
+                st.warning("Kurs USD/IDR belum tersedia — isi dulu kurs manual di atas sebelum menambahkan.")
             else:
                 ticker_final = ticker_baru.strip().upper()
                 baris_baru = pd.DataFrame([{
@@ -893,7 +973,11 @@ with col_main:
                 }])
                 st.session_state.portofolio = pd.concat([st.session_state.portofolio, baris_baru], ignore_index=True)
                 simpan_portofolio(st.session_state.portofolio)
-                catat_transaksi_modal("Beli", f"Beli {ticker_final}", -(jumlah_baru * harga_beli_baru))
+                biaya_idr = konversi_ke_idr(jumlah_baru * harga_beli_baru, mata_uang_baru, kurs_baru)
+                keterangan = f"Beli {ticker_final}"
+                if mata_uang_baru != "IDR":
+                    keterangan += f" ({mata_uang_baru} {harga_beli_baru:,.2f} × {jumlah_baru:,.0f}, kurs {kurs_baru:,.0f})"
+                catat_transaksi_modal("Beli", keterangan, -biaya_idr)
                 st.rerun()
 
     st.markdown("---")
@@ -911,6 +995,7 @@ with col_main:
     total_nilai_sekarang = 0.0
 
     if not portofolio.empty:
+        kurs_terkini = ambil_kurs_usd_idr_terkini()
         with st.spinner("Mengambil harga terkini..."):
             for i, baris in portofolio.iterrows():
                 ticker = baris["Ticker"]
@@ -918,8 +1003,15 @@ with col_main:
                 harga_beli = float(baris["HargaBeli"])
                 harga_sekarang, nama_saham, mata_uang = ambil_harga_terkini(ticker)
 
-                modal = jumlah * harga_beli
-                nilai_sekarang = jumlah * harga_sekarang if harga_sekarang else None
+                # Modal/Nilai Sekarang selalu dikonversi ke Rupiah (biar bisa
+                # dijumlah bareng posisi IDX) — Harga Beli/Harga Sekarang yang
+                # ditampilkan tetap dalam mata uang aslinya (USD kalau saham
+                # AS/crypto) supaya jelas berapa yang beneran dibayar/dikutip.
+                modal = konversi_ke_idr(jumlah * harga_beli, mata_uang, kurs_terkini)
+                nilai_sekarang = (
+                    konversi_ke_idr(jumlah * harga_sekarang, mata_uang, kurs_terkini)
+                    if harga_sekarang else None
+                )
                 untung_rugi = (nilai_sekarang - modal) if nilai_sekarang is not None else None
                 persen = (untung_rugi / modal * 100) if untung_rugi is not None and modal else None
 
@@ -931,6 +1023,8 @@ with col_main:
                     "_index": i,
                     "Ticker": ticker,
                     "Nama": nama_saham,
+                    "Kelas Aset": klasifikasi_aset(ticker),
+                    "Mata Uang": mata_uang or "IDR",
                     "Jumlah": jumlah,
                     "Harga Beli": harga_beli,
                     "Harga Sekarang": harga_sekarang if harga_sekarang else "N/A",
@@ -940,6 +1034,12 @@ with col_main:
                     "Persentase": f"{persen:.2f}%" if persen is not None else "N/A",
                     "Tanggal Beli": baris["TanggalBeli"],
                 })
+
+        if any(item["Mata Uang"] != "IDR" for item in baris_tampil) and not kurs_terkini:
+            st.warning(
+                "Gagal mengambil kurs USD/IDR terkini — Modal & Nilai Sekarang untuk posisi non-Rupiah "
+                "mungkin tidak akurat sampai kurs berhasil diambil lagi."
+            )
 
     saldo_tersedia = hitung_saldo_tersedia()
     total_untung_rugi = total_nilai_sekarang - total_modal
@@ -960,6 +1060,21 @@ with col_main:
     else:
         st.markdown("---")
 
+        filter_kelas = st.radio(
+            "Tampilkan",
+            ["Semua", "Saham Indonesia", "Lainnya (Crypto & Saham AS)"],
+            horizontal=True, key="filter_kelas_aset_pf",
+        )
+
+        def _cocok_filter(item):
+            if filter_kelas == "Semua":
+                return True
+            if filter_kelas == "Saham Indonesia":
+                return item["Kelas Aset"] == "Saham Indonesia"
+            return item["Kelas Aset"] != "Saham Indonesia"
+
+        baris_tampil_filter = [item for item in baris_tampil if _cocok_filter(item)]
+
         col_tabel, col_pie = st.columns([2, 1])
 
         with col_tabel:
@@ -968,26 +1083,32 @@ with col_main:
             def fmt_angka(v):
                 return f"{v:,.0f}" if isinstance(v, (int, float)) else v
 
-            df_tampil = pd.DataFrame(baris_tampil).drop(columns=["_index"])
+            df_tampil = pd.DataFrame(baris_tampil_filter).drop(columns=["_index"]) if baris_tampil_filter else pd.DataFrame()
             for kolom in ["Jumlah", "Harga Beli", "Harga Sekarang", "Modal", "Nilai Sekarang", "Untung/Rugi"]:
-                df_tampil[kolom] = df_tampil[kolom].apply(fmt_angka)
+                if kolom in df_tampil.columns:
+                    df_tampil[kolom] = df_tampil[kolom].apply(fmt_angka)
 
-            st.dataframe(
-                df_tampil,
-                use_container_width=True,
-                hide_index=True,
-            )
+            if df_tampil.empty:
+                st.caption("Tidak ada posisi yang cocok dengan filter ini.")
+            else:
+                st.dataframe(
+                    df_tampil,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
             st.caption("Hapus kepemilikan (modal pembelian akan dikembalikan otomatis ke Trading Balance):")
-            for item in baris_tampil:
+            for item in baris_tampil_filter:
                 c1, c2 = st.columns([5, 1])
-                c1.write(f"{item['Ticker']} — {item['Jumlah']:,.0f} lembar @ {item['Harga Beli']:,.0f}")
+                mata_uang_item = item.get("Mata Uang", "IDR")
+                c1.write(f"{item['Ticker']} — {item['Jumlah']:,.0f} lembar @ {mata_uang_item} {item['Harga Beli']:,.2f}")
                 if c2.button("Hapus", key=f"hapus_pf_{item['_index']}"):
                     st.session_state.portofolio = st.session_state.portofolio.drop(index=item["_index"]).reset_index(drop=True)
                     simpan_portofolio(st.session_state.portofolio)
+                    refund_idr = konversi_ke_idr(item["Jumlah"] * item["Harga Beli"], mata_uang_item, kurs_terkini)
                     catat_transaksi_modal(
                         "Koreksi", f"Hapus catatan {item['Ticker']}",
-                        item["Jumlah"] * item["Harga Beli"],
+                        refund_idr,
                     )
                     st.rerun()
 
@@ -995,7 +1116,7 @@ with col_main:
             st.subheader("Alokasi Portofolio")
             df_pie = pd.DataFrame([
                 {"Ticker": item["Ticker"], "Nilai": item["Nilai Sekarang"]}
-                for item in baris_tampil if item["Nilai Sekarang"] != "N/A"
+                for item in baris_tampil_filter if item["Nilai Sekarang"] != "N/A"
             ])
 
             PALET_DASAR = [
