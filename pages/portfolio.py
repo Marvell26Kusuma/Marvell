@@ -26,7 +26,7 @@ except ImportError:
 # ============================================================
 st.set_page_config(page_title="Portfolio Tracker", layout="wide", page_icon="briefcase")
 st.title("Portfolio Tracker")
-st.caption("Catat saham yang kamu beli, lalu pantau nilai portofolio & untung/rugi berdasarkan harga terkini.")
+st.caption("Catat saham/crypto yang kamu beli, lalu pantau nilai portofolio & untung/rugi berdasarkan harga terkini.")
 
 # ============================================================
 # 2. Styling — konsisten dengan tema di halaman utama
@@ -38,9 +38,6 @@ st.markdown(
     html, body, .stApp, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    /* Cegah scroll horizontal — panel Asisten AI yang digeser ke luar layar
-       (translateX) tetap dihitung lebarnya oleh browser kalau ini tidak dikunci.
-       Ditarget ke beberapa kemungkinan container scroll Streamlit sekaligus. */
     html {
         overflow-x: hidden !important;
         max-width: 100vw !important;
@@ -50,7 +47,7 @@ st.markdown(
     body {
         overflow-x: hidden !important;
         background-color: #0e1117 !important;
-        overscroll-behavior-y: none; /* cegah flash putih pas rubber-band scroll di iOS/Android */
+        overscroll-behavior-y: none;
     }
     .stApp,
     [data-testid="stAppViewContainer"],
@@ -84,8 +81,6 @@ st.markdown(
         background-color: rgba(255,255,255,0.02);
         color: rgba(255,255,255,0.35) !important;
     }
-
-    /* Expander — background gelap (bawaannya putih kalau tidak di-set) */
     [data-testid="stExpander"] {
         background-color: rgba(255,255,255,0.02);
         border: 1px solid rgba(128,128,128,0.15);
@@ -94,8 +89,6 @@ st.markdown(
     [data-testid="stExpander"] summary {
         background-color: transparent !important;
     }
-
-    /* Input, selectbox, multiselect — background gelap konsisten (BaseWeb default-nya putih) */
     .stTextInput input,
     .stNumberInput input,
     .stDateInput input,
@@ -111,9 +104,6 @@ st.markdown(
     [data-baseweb="tag"] {
         background-color: rgba(41,98,255,0.25) !important;
     }
-
-    /* Menu dropdown/popover BaseWeb dirender di luar pohon DOM utama (portal ke
-       document.body), jadi harus ditarget terpisah supaya ikut gelap juga. */
     [data-baseweb="popover"],
     [data-baseweb="menu"],
     ul[role="listbox"],
@@ -124,19 +114,13 @@ st.markdown(
     li[role="option"]:hover {
         background-color: rgba(255,255,255,0.08) !important;
     }
-
     *, *::before, *::after {
         box-sizing: border-box;
     }
-
     @media (max-width: 768px) {
         [data-testid="stMainBlockContainer"], .main .block-container {
             padding-left: 1rem !important;
         }
-
-        /* Streamlit otomatis nge-stack st.columns() ke bawah kalau layar
-           sempit — di sini dipaksa TETAP sejajar (nowrap) dan boleh
-           discroll ke samping, bukan ditumpuk ke bawah semua. */
         [data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             overflow-x: auto !important;
@@ -148,17 +132,14 @@ st.markdown(
             width: auto !important;
             min-width: 200px;
         }
-
         [data-testid="stDataFrame"],
         [data-testid="stImage"],
         iframe,
         .element-container {
             max-width: 100% !important;
         }
-
         h1 { font-size: 1.6rem !important; }
         h2 { font-size: 1.25rem !important; }
-
         .ringkasan-modal-grid {
             grid-template-columns: repeat(2, 1fr) !important;
         }
@@ -170,8 +151,6 @@ st.markdown(
     [data-testid="stExpander"] { border: 1px solid rgba(128,128,128,0.15); border-radius: 10px; }
     [data-testid="stMetricValue"] { font-weight: 700; }
 
-    /* Kartu ringkasan modal & ekuitas — grid 3 kolom x 2 baris ala platform
-       trading (Trading Balance, Invested, Open / P&L, Gain, Total Equity). */
     .ringkasan-modal-grid {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -267,8 +246,9 @@ def tanya_ai(system_prompt: str, riwayat_chat: list) -> str:
 
 
 # ============================================================
-# 3. Path data — daftar saham IDX, file portofolio, & memori Asisten AI
-#    Semuanya diletakkan satu folder dengan file utama (bukan di dalam pages/).
+# 3. Path data — daftar saham IDX, file portofolio, & memori Asisten AI.
+#    Semuanya di folder SATU LEVEL DI ATAS file ini, karena file ini
+#    sendiri ada di dalam pages/.
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -285,11 +265,15 @@ def dapatkan_sesi_yf():
         return curl_requests.Session(impersonate="chrome")
     except Exception:
         return None
+
+
 PATH_CSV_SAHAM = BASE_DIR / "daftar_saham_idx.csv"
 PATH_PORTOFOLIO = BASE_DIR / "portofolio.csv"
 PATH_MEMORI_AI_PF = BASE_DIR / "memori_ai_portofolio.json"
+PATH_LEDGER_MODAL = BASE_DIR / "ledger_modal.csv"
 
 KOLOM_PORTOFOLIO = ["Ticker", "Jumlah", "HargaBeli", "TanggalBeli"]
+KOLOM_LEDGER = ["Tanggal", "Jenis", "Keterangan", "Jumlah"]
 
 
 def muat_memori_ai_pf():
@@ -313,221 +297,19 @@ def simpan_memori_ai_pf(riwayat: list, catatan_preferensi: str):
 
 
 # ============================================================
-# 2c. Asisten AI — konteks & prompt sistem (dipakai panel di bagian paling bawah)
-# ============================================================
-SYSTEM_PROMPT_PORTOFOLIO = """Kamu adalah asisten manajemen portofolio di dalam sebuah aplikasi portfolio tracker. Tugasmu membantu pengguna memahami komposisi dan performa portofolio saham mereka.
-
-Data portofolio pengguna saat ini:
-{konteks}
-{blok_preferensi}
-{blok_dokumen}
-Instruksi:
-- Jawab berdasarkan data di atas, jangan mengarang angka yang tidak ada.
-- Perhatikan konsentrasi/diversifikasi portofolio — kalau porsi satu saham terlalu dominan, sebutkan risikonya.
-- Boleh membahas performa tiap posisi (untung/rugi), tapi jangan pernah memberi instruksi mutlak seperti "jual semua" atau "beli lagi" tanpa menjelaskan trade-off dan risikonya.
-- Ini BUKAN nasihat keuangan resmi — selalu ingatkan bahwa keputusan akhir ada di tangan pengguna.
-- Kalau ada catatan preferensi pengguna di atas, sesuaikan gaya jawabanmu dengan itu.
-- Jawab dalam Bahasa Indonesia, ringkas, boleh pakai bullet point.
-"""
-
-
-def bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang, saldo_tersedia=0.0, total_equity=0.0):
-    if not baris_tampil:
-        return (
-            f"Portofolio belum ada posisi saham. Trading Balance (kas belum diinvestasikan): "
-            f"Rp {saldo_tersedia:,.0f}."
-        )
-    baris_teks = [
-        f"- {item['Ticker']} ({item['Nama']}, {item['Kelas Aset']}): {item['Jumlah']:,.0f} lembar, "
-        f"harga beli {item['Mata Uang']} {item['Harga Beli']:,.2f}, harga sekarang {item['Mata Uang']} {item['Harga Sekarang']}, "
-        f"nilai sekarang Rp {item['Nilai Sekarang']}, untung/rugi Rp {item['Untung/Rugi']} ({item['Persentase']}) "
-        f"[nilai & untung-rugi sudah dikonversi ke Rupiah kalau mata uang aslinya bukan IDR]"
-        for item in baris_tampil
-    ]
-    ringkasan = (
-        f"Trading Balance (kas belum diinvestasikan): Rp {saldo_tersedia:,.0f}. "
-        f"Invested (modal di posisi terbuka): Rp {total_modal:,.0f}. "
-        f"Nilai posisi saat ini: Rp {total_nilai_sekarang:,.0f}. "
-        f"Total Equity (kas + nilai posisi): Rp {total_equity:,.0f}."
-    )
-    return ringkasan + "\n" + "\n".join(baris_teks)
-
-
-if "riwayat_chat_portofolio" not in st.session_state:
-    memori_awal_pf = muat_memori_ai_pf()
-    st.session_state.riwayat_chat_portofolio = memori_awal_pf["riwayat"]
-    st.session_state.catatan_preferensi_ai_pf = memori_awal_pf["catatan_preferensi"]
-
-if "catatan_preferensi_ai_pf" not in st.session_state:
-    st.session_state.catatan_preferensi_ai_pf = ""
-
-SARAN_PROMPT_AI_PF = [
-    ("📊", "Apakah portofolio saya terlalu terkonsentrasi?"),
-    ("📈", "Bagaimana performa portofolio saya sejauh ini?"),
-    ("⚠️", "Saham mana yang risikonya paling besar?"),
-    ("🧭", "Bagaimana cara diversifikasi yang lebih baik?"),
-]
-
-
-def _escape_dolar(teks: str) -> str:
-    """Escape tanda '$' supaya Streamlit tidak salah mengira itu sebagai
-    pembuka rumus LaTeX."""
-    return teks.replace("$", "\\$")
-
-
-def _proses_prompt_ai_pf(kotak_chat, prompt_teks: str, konteks_pf: str):
-    """Kirim satu prompt ke AI, tampilkan langsung di kotak chat, dan simpan ke riwayat (+ memori permanen)."""
-    st.session_state.riwayat_chat_portofolio.append({"role": "user", "content": prompt_teks})
-    with kotak_chat:
-        with st.chat_message("user"):
-            st.markdown(prompt_teks)
-        with st.chat_message("assistant"):
-            with st.spinner("Menganalisis..."):
-                catatan = st.session_state.get("catatan_preferensi_ai_pf", "").strip()
-                blok_preferensi = f"\nCatatan preferensi pengguna (ikuti gaya ini):\n{catatan}\n" if catatan else ""
-
-                dok = st.session_state.get("dokumen_diupload_ai_pf", "").strip()
-                blok_dokumen = f"\nData/dokumen tambahan yang diupload pengguna:\n{dok[:6000]}\n" if dok else ""
-
-                jawaban = tanya_ai(
-                    SYSTEM_PROMPT_PORTOFOLIO.format(
-                        konteks=konteks_pf, blok_preferensi=blok_preferensi, blok_dokumen=blok_dokumen,
-                    ),
-                    st.session_state.riwayat_chat_portofolio,
-                )
-            st.markdown(_escape_dolar(jawaban))
-    st.session_state.riwayat_chat_portofolio.append({"role": "assistant", "content": jawaban})
-    simpan_memori_ai_pf(st.session_state.riwayat_chat_portofolio, st.session_state.get("catatan_preferensi_ai_pf", ""))
-
-
-@st.cache_data(show_spinner=False)
-def muat_daftar_saham_idx():
-    if not PATH_CSV_SAHAM.exists():
-        return pd.DataFrame(columns=["Kode", "Nama Perusahaan", "Kategori", "Ticker"])
-    df = pd.read_csv(PATH_CSV_SAHAM)
-    df["Kode"] = df["Kode"].astype(str).str.strip()
-    df["Nama Perusahaan"] = df["Nama Perusahaan"].astype(str).str.strip()
-    df["Ticker"] = df["Kode"] + ".JK"
-    return df
-
-
-df_idx = muat_daftar_saham_idx()
-LABEL_SEMUA_SAHAM = (
-    [f"{kode} — {nama}" for kode, nama in zip(df_idx["Ticker"], df_idx["Nama Perusahaan"])]
-    if not df_idx.empty else []
-)
-
-
-def muat_portofolio():
-    if PATH_PORTOFOLIO.exists():
-        try:
-            df = pd.read_csv(PATH_PORTOFOLIO)
-            for kolom in KOLOM_PORTOFOLIO:
-                if kolom not in df.columns:
-                    df[kolom] = None
-            return df[KOLOM_PORTOFOLIO]
-        except Exception:
-            return pd.DataFrame(columns=KOLOM_PORTOFOLIO)
-    return pd.DataFrame(columns=KOLOM_PORTOFOLIO)
-
-
-def simpan_portofolio(df: pd.DataFrame):
-    try:
-        df.to_csv(PATH_PORTOFOLIO, index=False)
-    except Exception as e:
-        st.warning(f"Gagal menyimpan portofolio ke file ({e}) — perubahan tetap berlaku untuk sesi ini saja.")
-
-
-if "portofolio" not in st.session_state:
-    st.session_state.portofolio = muat_portofolio()
-
-
-# ============================================================
-# 5c. Ledger Modal — mencatat semua pergerakan kas: setor, tarik, beli, jual.
-#     Saldo Trading Balance = jumlah semua baris ledger (positif = kas masuk,
-#     negatif = kas keluar). Ini yang menentukan berapa "amunisi" tersisa
-#     buat beli saham baru.
-# ============================================================
-PATH_LEDGER_MODAL = BASE_DIR / "ledger_modal.csv"
-KOLOM_LEDGER = ["Tanggal", "Jenis", "Keterangan", "Jumlah"]
-
-
-def muat_ledger_modal():
-    if PATH_LEDGER_MODAL.exists():
-        try:
-            df = pd.read_csv(PATH_LEDGER_MODAL)
-            for kolom in KOLOM_LEDGER:
-                if kolom not in df.columns:
-                    df[kolom] = None
-            return df[KOLOM_LEDGER]
-        except Exception:
-            return pd.DataFrame(columns=KOLOM_LEDGER)
-    return pd.DataFrame(columns=KOLOM_LEDGER)
-
-
-def simpan_ledger_modal(df: pd.DataFrame):
-    try:
-        df.to_csv(PATH_LEDGER_MODAL, index=False)
-    except Exception as e:
-        st.warning(f"Gagal menyimpan riwayat modal ke file ({e}) — perubahan tetap berlaku untuk sesi ini saja.")
-
-
-def catat_transaksi_modal(jenis: str, keterangan: str, jumlah: float):
-    """jumlah positif = kas masuk (setor, jual, koreksi hapus), negatif = kas keluar (tarik, beli)."""
-    baris_baru = pd.DataFrame([{
-        "Tanggal": date.today().isoformat(),
-        "Jenis": jenis,
-        "Keterangan": keterangan,
-        "Jumlah": jumlah,
-    }])
-    st.session_state.ledger_modal = pd.concat([st.session_state.ledger_modal, baris_baru], ignore_index=True)
-    simpan_ledger_modal(st.session_state.ledger_modal)
-
-
-if "ledger_modal" not in st.session_state:
-    st.session_state.ledger_modal = muat_ledger_modal()
-
-
-def hitung_saldo_tersedia() -> float:
-    if st.session_state.ledger_modal.empty:
-        return 0.0
-    return float(st.session_state.ledger_modal["Jumlah"].sum())
-
-
-def render_kartu_ringkasan_modal(saldo_tersedia, invested, jumlah_posisi, pnl, persen_gain, total_equity):
-    """Kartu ringkasan gaya platform trading: grid 3 kolom x 2 baris —
-    Trading Balance / Invested / Open (baris 1), P&L / Gain / Total Equity
-    (baris 2). P&L & Gain diwarnai hijau/merah sesuai tandanya."""
-    warna_pnl = "#26a69a" if pnl >= 0 else "#ef5350"
-    warna_gain = "#26a69a" if persen_gain >= 0 else "#ef5350"
-    tanda_pnl = "+" if pnl >= 0 else ""
-    tanda_gain = "+" if persen_gain >= 0 else ""
-
-    st.markdown(
-        f"""
-        <div class="ringkasan-modal-grid">
-            <div class="stat"><div class="nilai">{saldo_tersedia:,.0f}</div><div class="label">Trading Balance</div></div>
-            <div class="stat"><div class="nilai">{invested:,.0f}</div><div class="label">Invested</div></div>
-            <div class="stat"><div class="nilai">{jumlah_posisi:,.0f}</div><div class="label">Open</div></div>
-            <div class="stat"><div class="nilai" style="color:{warna_pnl};">{tanda_pnl}{pnl:,.0f}</div><div class="label">P&amp;L</div></div>
-            <div class="stat"><div class="nilai" style="color:{warna_gain};">{tanda_gain}{persen_gain:.2f}%</div><div class="label">Gain</div></div>
-            <div class="stat"><div class="nilai">{total_equity:,.0f}</div><div class="label">Total Equity</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# ============================================================
-# 3b. Kurs USD/IDR & klasifikasi kelas aset — dibutuhkan karena harga
-#    saham AS & crypto ditarik dari yfinance dalam USD, sedangkan
-#    Trading Balance/Invested/Total Equity di app ini dalam Rupiah.
+# 3a. Kurs USD/IDR & klasifikasi kelas aset. Dipusatkan di sini karena
+#    dipakai di HAMPIR semua bagian (form tambah, tabel ringkasan,
+#    hapus/refund, kurva ekuitas) — dulu ada titik yang lupa convert,
+#    sekarang semua alur lewat fungsi yang sama.
 # ============================================================
 USD_IDR_TICKER = "USDIDR=X"
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def ambil_kurs_usd_idr_terkini():
+def ambil_kurs_usd_idr():
+    """Kurs USD/IDR terkini. None kalau gagal diambil — form tambah &
+    tabel ringkasan sama-sama menangani None ini secara eksplisit,
+    bukan diam-diam dianggap 1:1."""
     try:
         info = yf.Ticker(USD_IDR_TICKER, session=dapatkan_sesi_yf()).info
         kurs = info.get("regularMarketPrice") or info.get("currentPrice")
@@ -538,15 +320,20 @@ def ambil_kurs_usd_idr_terkini():
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def ambil_mata_uang_ticker(ticker: str):
+    """Mata uang asli suatu ticker (mis. 'USD', 'IDR'), atau None kalau
+    tickernya gak dikenali yfinance sama sekali — dipakai buat validasi
+    input, BUKAN cuma diam-diam fallback ke IDR."""
     try:
         info = yf.Ticker(ticker, session=dapatkan_sesi_yf()).info
+        if not info or not (info.get("currency") or info.get("regularMarketPrice") or info.get("currentPrice")):
+            return None
         return info.get("currency") or "IDR"
     except Exception:
-        return "IDR"
+        return None
 
 
 def klasifikasi_aset(ticker: str) -> str:
-    t = ticker.upper()
+    t = (ticker or "").upper()
     if t.endswith(".JK"):
         return "Saham Indonesia"
     if t.endswith("-USD") or t.endswith("-USDT"):
@@ -556,11 +343,44 @@ def klasifikasi_aset(ticker: str) -> str:
 
 def konversi_ke_idr(nilai: float, mata_uang: str, kurs_usd_idr) -> float:
     """Konversi nilai (harga/modal/dsb) ke Rupiah. Cuma menangani USD -> IDR
-    (kasus utama: saham AS & crypto dari yfinance keduanya dikutip dalam USD);
-    mata uang lain diasumsikan sudah Rupiah / tidak dikonversi."""
+    (kasus utama: saham AS & crypto dari yfinance keduanya dikutip dalam
+    USD); mata uang lain (termasuk IDR) dikembalikan apa adanya."""
     if mata_uang == "USD" and kurs_usd_idr:
         return nilai * kurs_usd_idr
     return nilai
+
+
+def fmt_jumlah(nilai: float, kelas_aset: str) -> str:
+    """Crypto butuh presisi desimal (bisa beli 0.00123 BTC) — saham
+    ditampilkan sebagai lembar bulat seperti biasa."""
+    if nilai is None:
+        return "N/A"
+    if kelas_aset == "Crypto":
+        s = f"{nilai:.8f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+    return f"{nilai:,.0f}"
+
+
+def fmt_harga_asli(nilai, mata_uang: str) -> str:
+    """Format harga dalam mata uang aslinya. IDR dibulatkan ke satuan
+    rupiah; USD dikasih lebih banyak desimal kalau harganya kecil (umum
+    buat altcoin/saham murah) biar gak keliatan 0.00."""
+    if nilai is None or nilai == "N/A":
+        return "N/A"
+    if mata_uang == "IDR":
+        return f"{nilai:,.0f}"
+    nilai = float(nilai)
+    if abs(nilai) < 1:
+        return f"{nilai:,.6f}"
+    if abs(nilai) < 100:
+        return f"{nilai:,.4f}"
+    return f"{nilai:,.2f}"
+
+
+def fmt_rupiah(nilai) -> str:
+    if nilai is None or nilai == "N/A":
+        return "N/A"
+    return f"{nilai:,.0f}"
 
 
 # ============================================================
@@ -572,26 +392,24 @@ def ambil_harga_terkini(ticker: str):
         info = yf.Ticker(ticker, session=dapatkan_sesi_yf()).info
         harga = info.get("currentPrice") or info.get("regularMarketPrice")
         nama = info.get("shortName", ticker)
-        mata_uang = info.get("currency", "")
+        mata_uang = info.get("currency", "IDR")
         return harga, nama, mata_uang
     except Exception:
-        return None, ticker, ""
+        return None, ticker, "IDR"
 
 
 # ============================================================
 # 4b. Grafik Performa — rekonstruksi kurva ekuitas harian dari histori
-#    harga tiap saham (yfinance) + tanggal beli tiap posisi + mutasi
-#    ledger, dan kurva IHSG buat pembanding.
+#    harga tiap saham/crypto (yfinance) + tanggal beli tiap posisi +
+#    mutasi ledger, plus kurva IHSG buat pembanding.
 # ============================================================
 IHSG_TICKER = "^JKSE"
-
 RENTANG_WAKTU_HARI = {"1W": 7, "1M": 30, "3M": 90, "1Y": 365}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def ambil_histori_harga(ticker: str):
-    """Histori harga penutupan harian ~5 tahun terakhir (cukup buat cover
-    rentang 'All' di kebanyakan kasus pemakaian pribadi)."""
+    """Histori harga penutupan harian ~5 tahun terakhir."""
     try:
         data = yf.Ticker(ticker, session=dapatkan_sesi_yf()).history(period="5y")
         if data is None or data.empty:
@@ -605,8 +423,8 @@ def ambil_histori_harga(ticker: str):
 
 
 def bangun_kurva_ekuitas(portofolio_df: pd.DataFrame, ledger_df: pd.DataFrame) -> pd.Series:
-    """Rekonstruksi Total Equity (kas + nilai posisi) per hari, dari
-    tanggal transaksi/posisi paling awal sampai hari ini."""
+    """Rekonstruksi Total Equity (kas + nilai posisi, dalam Rupiah) per
+    hari, dari tanggal transaksi/posisi paling awal sampai hari ini."""
     tanggal_mulai_kandidat = []
     if not portofolio_df.empty:
         tanggal_mulai_kandidat.append(pd.to_datetime(portofolio_df["TanggalBeli"]).min())
@@ -633,19 +451,16 @@ def bangun_kurva_ekuitas(portofolio_df: pd.DataFrame, ledger_df: pd.DataFrame) -
                 continue
             harga_harian = harga.reindex(indeks_tanggal).ffill().bfill()
 
-            # Saham/crypto yang dikutip yfinance dalam USD (saham AS, crypto)
-            # dikonversi ke Rupiah pakai kurs USD/IDR historis per hari,
-            # supaya nyambung sama posisi saham IDX yang udah Rupiah.
             mata_uang_ticker = ambil_mata_uang_ticker(ticker)
             if mata_uang_ticker == "USD" and kurs_historis_harian is not None:
                 harga_harian = harga_harian * kurs_historis_harian
 
-            lembar_kumulatif = pd.Series(0.0, index=indeks_tanggal)
+            jumlah_kumulatif = pd.Series(0.0, index=indeks_tanggal)
             for _, baris in grup.iterrows():
                 tgl_beli = pd.to_datetime(baris["TanggalBeli"])
-                lembar_kumulatif.loc[lembar_kumulatif.index >= tgl_beli] += float(baris["Jumlah"])
+                jumlah_kumulatif.loc[jumlah_kumulatif.index >= tgl_beli] += float(baris["Jumlah"])
 
-            nilai_posisi = nilai_posisi.add(lembar_kumulatif * harga_harian, fill_value=0.0)
+            nilai_posisi = nilai_posisi.add(jumlah_kumulatif * harga_harian, fill_value=0.0)
 
     kas = pd.Series(0.0, index=indeks_tanggal)
     if not ledger_df.empty:
@@ -684,7 +499,7 @@ def render_grafik_performa(seri_ekuitas: pd.Series):
     if seri_ekuitas.empty:
         st.caption(
             "Grafik performa portofolio dari hari ke hari akan muncul di sini setelah kamu "
-            "menyetor modal dan/atau menambahkan saham."
+            "menyetor modal dan/atau menambahkan saham/crypto."
         )
         st.markdown("---")
         return
@@ -812,6 +627,116 @@ def render_grafik_perbandingan_ihsg(seri_ekuitas: pd.Series):
     st.plotly_chart(fig, use_container_width=True)
 
 
+@st.cache_data(show_spinner=False)
+def muat_daftar_saham_idx():
+    if not PATH_CSV_SAHAM.exists():
+        return pd.DataFrame(columns=["Kode", "Nama Perusahaan", "Kategori", "Ticker"])
+    df = pd.read_csv(PATH_CSV_SAHAM)
+    df["Kode"] = df["Kode"].astype(str).str.strip()
+    df["Nama Perusahaan"] = df["Nama Perusahaan"].astype(str).str.strip()
+    df["Ticker"] = df["Kode"] + ".JK"
+    return df
+
+
+df_idx = muat_daftar_saham_idx()
+LABEL_SEMUA_SAHAM = (
+    [f"{kode} — {nama}" for kode, nama in zip(df_idx["Ticker"], df_idx["Nama Perusahaan"])]
+    if not df_idx.empty else []
+)
+
+
+def muat_portofolio():
+    if PATH_PORTOFOLIO.exists():
+        try:
+            df = pd.read_csv(PATH_PORTOFOLIO)
+            for kolom in KOLOM_PORTOFOLIO:
+                if kolom not in df.columns:
+                    df[kolom] = None
+            df["Jumlah"] = df["Jumlah"].astype(float)
+            df["HargaBeli"] = df["HargaBeli"].astype(float)
+            return df[KOLOM_PORTOFOLIO]
+        except Exception:
+            return pd.DataFrame(columns=KOLOM_PORTOFOLIO)
+    return pd.DataFrame(columns=KOLOM_PORTOFOLIO)
+
+
+def simpan_portofolio(df: pd.DataFrame):
+    try:
+        df.to_csv(PATH_PORTOFOLIO, index=False)
+    except Exception as e:
+        st.warning(f"Gagal menyimpan portofolio ke file ({e}) — perubahan tetap berlaku untuk sesi ini saja.")
+
+
+if "portofolio" not in st.session_state:
+    st.session_state.portofolio = muat_portofolio()
+
+
+def muat_ledger_modal():
+    if PATH_LEDGER_MODAL.exists():
+        try:
+            df = pd.read_csv(PATH_LEDGER_MODAL)
+            for kolom in KOLOM_LEDGER:
+                if kolom not in df.columns:
+                    df[kolom] = None
+            return df[KOLOM_LEDGER]
+        except Exception:
+            return pd.DataFrame(columns=KOLOM_LEDGER)
+    return pd.DataFrame(columns=KOLOM_LEDGER)
+
+
+def simpan_ledger_modal(df: pd.DataFrame):
+    try:
+        df.to_csv(PATH_LEDGER_MODAL, index=False)
+    except Exception as e:
+        st.warning(f"Gagal menyimpan riwayat modal ke file ({e}) — perubahan tetap berlaku untuk sesi ini saja.")
+
+
+def catat_transaksi_modal(jenis: str, keterangan: str, jumlah: float):
+    """jumlah positif = kas masuk (setor, jual, koreksi hapus), negatif = kas keluar (tarik, beli). Selalu dalam Rupiah."""
+    baris_baru = pd.DataFrame([{
+        "Tanggal": date.today().isoformat(),
+        "Jenis": jenis,
+        "Keterangan": keterangan,
+        "Jumlah": jumlah,
+    }])
+    st.session_state.ledger_modal = pd.concat([st.session_state.ledger_modal, baris_baru], ignore_index=True)
+    simpan_ledger_modal(st.session_state.ledger_modal)
+
+
+if "ledger_modal" not in st.session_state:
+    st.session_state.ledger_modal = muat_ledger_modal()
+
+
+def hitung_saldo_tersedia() -> float:
+    if st.session_state.ledger_modal.empty:
+        return 0.0
+    return float(st.session_state.ledger_modal["Jumlah"].sum())
+
+
+def render_kartu_ringkasan_modal(saldo_tersedia, invested, jumlah_posisi, pnl, persen_gain, total_equity):
+    """Kartu ringkasan gaya platform trading: grid 3 kolom x 2 baris —
+    Trading Balance / Invested / Open (baris 1), P&L / Gain / Total Equity
+    (baris 2). Semua angka dalam Rupiah. P&L & Gain diwarnai hijau/merah."""
+    warna_pnl = "#26a69a" if pnl >= 0 else "#ef5350"
+    warna_gain = "#26a69a" if persen_gain >= 0 else "#ef5350"
+    tanda_pnl = "+" if pnl >= 0 else ""
+    tanda_gain = "+" if persen_gain >= 0 else ""
+
+    st.markdown(
+        f"""
+        <div class="ringkasan-modal-grid">
+            <div class="stat"><div class="nilai">{saldo_tersedia:,.0f}</div><div class="label">Trading Balance</div></div>
+            <div class="stat"><div class="nilai">{invested:,.0f}</div><div class="label">Invested</div></div>
+            <div class="stat"><div class="nilai">{jumlah_posisi:,.0f}</div><div class="label">Open</div></div>
+            <div class="stat"><div class="nilai" style="color:{warna_pnl};">{tanda_pnl}{pnl:,.0f}</div><div class="label">P&amp;L</div></div>
+            <div class="stat"><div class="nilai" style="color:{warna_gain};">{tanda_gain}{persen_gain:.2f}%</div><div class="label">Gain</div></div>
+            <div class="stat"><div class="nilai">{total_equity:,.0f}</div><div class="label">Total Equity</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ============================================================
 # 5. Layout dua bagian: konten utama (kiri) + panel Asisten AI (kanan, fixed sidebar)
 # ============================================================
@@ -826,10 +751,6 @@ st.markdown(
         padding-right: {PADDING_KANAN_AKTIF}px !important;
         transition: padding-right 0.18s cubic-bezier(0.2, 0, 0.2, 1);
     }}
-
-    /* Di layar sempit (HP), panel AI jadi overlay penuh (bukan sisip di
-       samping), jadi konten utama TIDAK perlu diberi ruang kosong di
-       kanan — kalau tetap dipaksa, layar HP jadi kepencet sempit sekali. */
     @media (max-width: 768px) {{
         [data-testid="stMainBlockContainer"], .main .block-container {{
             padding-right: 1rem !important;
@@ -840,8 +761,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Backdrop khusus HP: kalau panel AI kebuka di layar sempit, area di luar
-# panel jadi bisa diklik/ditap buat nutup panel-nya lagi.
 components.html(
     f"""
     <script>
@@ -879,32 +798,28 @@ col_main = st.container()
 with col_main:
 
     # ============================================================
-    # 5a-1. Grafik Performa (Total Equity dari hari ke hari) — paling atas
-    #      halaman, direkonstruksi dari histori harga tiap saham + tanggal
-    #      beli + mutasi ledger. Ditaruh sebelum apa pun supaya langsung
-    #      kelihatan begitu halaman dibuka.
+    # 5a-1. Grafik Performa — paling atas halaman.
     # ============================================================
     with st.spinner("Menghitung performa portofolio..."):
         seri_ekuitas = bangun_kurva_ekuitas(st.session_state.portofolio, st.session_state.ledger_modal)
     render_grafik_performa(seri_ekuitas)
 
     # ============================================================
-    # 5a0. Kelola Modal — Setor / Tarik Dana. Ini yang mengisi "Trading
-    #      Balance" di kartu ringkasan; tanpa ini saldo akan selalu 0.
+    # 5a0. Kelola Modal — Setor / Tarik Dana.
     # ============================================================
     with st.expander("Kelola Modal (Setor / Tarik Dana)", expanded=st.session_state.ledger_modal.empty):
         st.caption(
             "Trading Balance dihitung dari catatan setor/tarik dana di sini, dikurangi biaya "
-            "setiap kali kamu menambahkan saham ke portofolio (dianggap sebagai 'pembelian')."
+            "setiap kali kamu menambahkan saham/crypto ke portofolio (dianggap sebagai 'pembelian')."
         )
         col_setor, col_tarik = st.columns(2)
         with col_setor:
-            jumlah_setor = st.number_input("Jumlah setor", min_value=0.0, step=100000.0, value=0.0, key="input_setor")
+            jumlah_setor = st.number_input("Jumlah setor (Rp)", min_value=0.0, step=100000.0, value=0.0, key="input_setor")
             if st.button("Setor Dana", use_container_width=True) and jumlah_setor > 0:
                 catat_transaksi_modal("Setor", "Setor dana", jumlah_setor)
                 st.rerun()
         with col_tarik:
-            jumlah_tarik = st.number_input("Jumlah tarik", min_value=0.0, step=100000.0, value=0.0, key="input_tarik")
+            jumlah_tarik = st.number_input("Jumlah tarik (Rp)", min_value=0.0, step=100000.0, value=0.0, key="input_tarik")
             if st.button("Tarik Dana", use_container_width=True) and jumlah_tarik > 0:
                 catat_transaksi_modal("Tarik", "Tarik dana", -jumlah_tarik)
                 st.rerun()
@@ -917,35 +832,67 @@ with col_main:
                 )
 
     # ============================================================
-    # 5a. Form tambah kepemilikan baru
+    # 5a. Form tambah kepemilikan baru — mendukung saham (lembar, bulat)
+    #    maupun crypto (unit, boleh desimal — gak masuk akal kalau crypto
+    #    dipaksa "1 lembar").
     # ============================================================
-    with st.expander("Tambah Saham ke Portofolio", expanded=st.session_state.portofolio.empty):
-        mode_input = st.radio("Cara pilih saham", ["Pilih dari daftar IDX", "Ketik manual (termasuk saham luar negeri)"], horizontal=True)
+    with st.expander("Tambah Saham/Crypto ke Portofolio", expanded=st.session_state.portofolio.empty):
+        mode_input = st.radio(
+            "Cara pilih", ["Pilih dari daftar IDX", "Ketik manual (saham luar negeri / crypto)"],
+            horizontal=True, key="mode_input_tambah",
+        )
 
         if mode_input == "Pilih dari daftar IDX":
             pilihan_label = st.selectbox("Saham", LABEL_SEMUA_SAHAM, index=None, placeholder="Ketik nama atau kode untuk mencari...")
             ticker_baru = pilihan_label.split(" — ")[0] if pilihan_label else None
         else:
-            ticker_baru = st.text_input("Kode ticker", placeholder="mis. BBCA.JK, AAPL, atau BTC-USD (crypto)")
+            ticker_baru = st.text_input("Kode ticker", placeholder="mis. AAPL (saham AS) atau BTC-USD (crypto)")
+            st.caption(
+                "Format: saham AS cukup kode biasa (mis. `AAPL`, `TSLA`) — crypto WAJIB pakai akhiran "
+                "`-USD` (mis. `BTC-USD`, `ETH-USD`, `SOL-USD`), bukan cuma `BTC`."
+            )
 
         mata_uang_baru = ambil_mata_uang_ticker(ticker_baru) if ticker_baru else "IDR"
-        label_harga = f"Harga beli per lembar ({mata_uang_baru})" if mata_uang_baru != "IDR" else "Harga beli per lembar"
+        ticker_tidak_dikenali = bool(ticker_baru) and mata_uang_baru is None
+        if ticker_tidak_dikenali:
+            st.warning(
+                f"Ticker '{ticker_baru}' gak dikenali Yahoo Finance. Untuk crypto pastikan pakai "
+                f"akhiran -USD (mis. BTC-USD), untuk saham AS cukup kode biasa (mis. AAPL)."
+            )
+        mata_uang_baru = mata_uang_baru or "IDR"
+        kelas_baru = klasifikasi_aset(ticker_baru) if ticker_baru else "Saham Indonesia"
+        label_harga = f"Harga beli per {'unit' if kelas_baru == 'Crypto' else 'lembar'} ({mata_uang_baru})" \
+            if mata_uang_baru != "IDR" else "Harga beli per lembar"
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            jumlah_baru = st.number_input("Jumlah lembar saham", min_value=0, step=1, value=0)
+            if kelas_baru == "Crypto":
+                jumlah_baru = st.number_input(
+                    "Jumlah unit/koin", min_value=0.0, value=0.0, step=0.00000001,
+                    format="%.8f", key="jumlah_baru_crypto",
+                    help="Crypto boleh pecahan, mis. 0.0023 BTC — gak harus 1 unit penuh.",
+                )
+            else:
+                jumlah_baru = st.number_input(
+                    "Jumlah lembar saham", min_value=0.0, value=0.0, step=1.0,
+                    format="%.0f", key="jumlah_baru_saham",
+                )
         with col2:
-            harga_beli_baru = st.number_input(label_harga, min_value=0.0, step=1.0, value=0.0)
+            harga_beli_baru = st.number_input(
+                label_harga, min_value=0.0, step=0.01 if mata_uang_baru != "IDR" else 1.0,
+                value=0.0, format="%.4f" if mata_uang_baru != "IDR" else "%.0f",
+            )
         with col3:
             tanggal_beli_baru = st.date_input("Tanggal beli", value=date.today())
 
         kurs_baru = None
         if mata_uang_baru == "USD" and ticker_baru:
-            kurs_baru = ambil_kurs_usd_idr_terkini()
+            kurs_baru = ambil_kurs_usd_idr()
             if kurs_baru:
+                estimasi_idr = jumlah_baru * harga_beli_baru * kurs_baru
                 st.caption(
-                    f"Kurs USD/IDR saat ini: Rp {kurs_baru:,.0f}. Modal & Trading Balance akan "
-                    f"dicatat dalam Rupiah hasil konversi ({mata_uang_baru} × kurs)."
+                    f"Kurs USD/IDR saat ini: Rp {kurs_baru:,.0f}. Estimasi modal: "
+                    f"Rp {estimasi_idr:,.0f} (dicatat ke Trading Balance dalam Rupiah)."
                 )
             else:
                 st.warning(
@@ -958,9 +905,11 @@ with col_main:
 
         if st.button("Tambah ke Portofolio", type="primary"):
             if not ticker_baru:
-                st.warning("Pilih atau ketik kode saham terlebih dahulu.")
+                st.warning("Pilih atau ketik kode saham/crypto terlebih dahulu.")
+            elif ticker_tidak_dikenali:
+                st.warning(f"Ticker '{ticker_baru}' gak dikenali Yahoo Finance — cek lagi formatnya.")
             elif jumlah_baru <= 0 or harga_beli_baru <= 0:
-                st.warning("Jumlah lembar dan harga beli harus lebih dari 0.")
+                st.warning("Jumlah dan harga beli harus lebih dari 0.")
             elif mata_uang_baru == "USD" and not kurs_baru:
                 st.warning("Kurs USD/IDR belum tersedia — isi dulu kurs manual di atas sebelum menambahkan.")
             else:
@@ -976,7 +925,7 @@ with col_main:
                 biaya_idr = konversi_ke_idr(jumlah_baru * harga_beli_baru, mata_uang_baru, kurs_baru)
                 keterangan = f"Beli {ticker_final}"
                 if mata_uang_baru != "IDR":
-                    keterangan += f" ({mata_uang_baru} {harga_beli_baru:,.2f} × {jumlah_baru:,.0f}, kurs {kurs_baru:,.0f})"
+                    keterangan += f" ({mata_uang_baru} {harga_beli_baru:,.4f} × {jumlah_baru:g}, kurs {kurs_baru:,.0f})"
                 catat_transaksi_modal("Beli", keterangan, -biaya_idr)
                 st.rerun()
 
@@ -987,26 +936,26 @@ with col_main:
     # ============================================================
     portofolio = st.session_state.portofolio
 
-    # Nilai default dipakai panel Asisten AI & kartu ringkasan walau
-    # portofolio masih kosong (Trading Balance tetap relevan meski belum
-    # ada posisi terbuka).
     baris_tampil = []
     total_modal = 0.0
     total_nilai_sekarang = 0.0
+    kurs_terkini = None
 
     if not portofolio.empty:
-        kurs_terkini = ambil_kurs_usd_idr_terkini()
+        kurs_terkini = ambil_kurs_usd_idr()
         with st.spinner("Mengambil harga terkini..."):
             for i, baris in portofolio.iterrows():
                 ticker = baris["Ticker"]
                 jumlah = float(baris["Jumlah"])
                 harga_beli = float(baris["HargaBeli"])
                 harga_sekarang, nama_saham, mata_uang = ambil_harga_terkini(ticker)
+                mata_uang = mata_uang or "IDR"
+                kelas_aset = klasifikasi_aset(ticker)
 
-                # Modal/Nilai Sekarang selalu dikonversi ke Rupiah (biar bisa
-                # dijumlah bareng posisi IDX) — Harga Beli/Harga Sekarang yang
-                # ditampilkan tetap dalam mata uang aslinya (USD kalau saham
-                # AS/crypto) supaya jelas berapa yang beneran dibayar/dikutip.
+                # Modal/Nilai Sekarang SELALU dalam Rupiah (biar bisa dijumlah
+                # bareng posisi IDX) — Harga Beli/Harga Sekarang yang
+                # ditampilkan tetap dalam mata uang asli (USD kalau saham
+                # AS/crypto) supaya jelas berapa yang beneran dikutip/dibayar.
                 modal = konversi_ke_idr(jumlah * harga_beli, mata_uang, kurs_terkini)
                 nilai_sekarang = (
                     konversi_ke_idr(jumlah * harga_sekarang, mata_uang, kurs_terkini)
@@ -1023,15 +972,15 @@ with col_main:
                     "_index": i,
                     "Ticker": ticker,
                     "Nama": nama_saham,
-                    "Kelas Aset": klasifikasi_aset(ticker),
-                    "Mata Uang": mata_uang or "IDR",
+                    "Kelas Aset": kelas_aset,
+                    "Mata Uang": mata_uang,
                     "Jumlah": jumlah,
                     "Harga Beli": harga_beli,
-                    "Harga Sekarang": harga_sekarang if harga_sekarang else "N/A",
+                    "Harga Sekarang": harga_sekarang,
                     "Modal": modal,
-                    "Nilai Sekarang": nilai_sekarang if nilai_sekarang is not None else "N/A",
-                    "Untung/Rugi": untung_rugi if untung_rugi is not None else "N/A",
-                    "Persentase": f"{persen:.2f}%" if persen is not None else "N/A",
+                    "Nilai Sekarang": nilai_sekarang,
+                    "Untung/Rugi": untung_rugi,
+                    "Persentase": persen,
                     "Tanggal Beli": baris["TanggalBeli"],
                 })
 
@@ -1056,7 +1005,7 @@ with col_main:
     )
 
     if portofolio.empty:
-        st.info("Portofolio masih kosong. Tambahkan saham lewat form di atas untuk mulai memantau.")
+        st.info("Portofolio masih kosong. Tambahkan saham/crypto lewat form di atas untuk mulai memantau.")
     else:
         st.markdown("---")
 
@@ -1080,43 +1029,47 @@ with col_main:
         with col_tabel:
             st.subheader("Rincian Kepemilikan")
 
-            def fmt_angka(v):
-                return f"{v:,.0f}" if isinstance(v, (int, float)) else v
-
-            df_tampil = pd.DataFrame(baris_tampil_filter).drop(columns=["_index"]) if baris_tampil_filter else pd.DataFrame()
-            for kolom in ["Jumlah", "Harga Beli", "Harga Sekarang", "Modal", "Nilai Sekarang", "Untung/Rugi"]:
-                if kolom in df_tampil.columns:
-                    df_tampil[kolom] = df_tampil[kolom].apply(fmt_angka)
-
-            if df_tampil.empty:
+            if not baris_tampil_filter:
                 st.caption("Tidak ada posisi yang cocok dengan filter ini.")
             else:
-                st.dataframe(
-                    df_tampil,
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                baris_format = []
+                for item in baris_tampil_filter:
+                    baris_format.append({
+                        "Ticker": item["Ticker"],
+                        "Nama": item["Nama"],
+                        "Kelas Aset": item["Kelas Aset"],
+                        "Jumlah": fmt_jumlah(item["Jumlah"], item["Kelas Aset"]),
+                        "Harga Beli": f"{item['Mata Uang']} {fmt_harga_asli(item['Harga Beli'], item['Mata Uang'])}",
+                        "Harga Sekarang": (
+                            f"{item['Mata Uang']} {fmt_harga_asli(item['Harga Sekarang'], item['Mata Uang'])}"
+                            if item["Harga Sekarang"] is not None else "N/A"
+                        ),
+                        "Modal (Rp)": fmt_rupiah(item["Modal"]),
+                        "Nilai Sekarang (Rp)": fmt_rupiah(item["Nilai Sekarang"]),
+                        "Untung/Rugi (Rp)": fmt_rupiah(item["Untung/Rugi"]),
+                        "Persentase": f"{item['Persentase']:.2f}%" if item["Persentase"] is not None else "N/A",
+                    })
+                st.dataframe(pd.DataFrame(baris_format), use_container_width=True, hide_index=True)
 
             st.caption("Hapus kepemilikan (modal pembelian akan dikembalikan otomatis ke Trading Balance):")
             for item in baris_tampil_filter:
                 c1, c2 = st.columns([5, 1])
-                mata_uang_item = item.get("Mata Uang", "IDR")
-                c1.write(f"{item['Ticker']} — {item['Jumlah']:,.0f} lembar @ {mata_uang_item} {item['Harga Beli']:,.2f}")
+                jumlah_txt = fmt_jumlah(item["Jumlah"], item["Kelas Aset"])
+                harga_txt = fmt_harga_asli(item["Harga Beli"], item["Mata Uang"])
+                unit_txt = "unit" if item["Kelas Aset"] == "Crypto" else "lembar"
+                c1.write(f"{item['Ticker']} — {jumlah_txt} {unit_txt} @ {item['Mata Uang']} {harga_txt}")
                 if c2.button("Hapus", key=f"hapus_pf_{item['_index']}"):
                     st.session_state.portofolio = st.session_state.portofolio.drop(index=item["_index"]).reset_index(drop=True)
                     simpan_portofolio(st.session_state.portofolio)
-                    refund_idr = konversi_ke_idr(item["Jumlah"] * item["Harga Beli"], mata_uang_item, kurs_terkini)
-                    catat_transaksi_modal(
-                        "Koreksi", f"Hapus catatan {item['Ticker']}",
-                        refund_idr,
-                    )
+                    refund_idr = konversi_ke_idr(item["Jumlah"] * item["Harga Beli"], item["Mata Uang"], kurs_terkini)
+                    catat_transaksi_modal("Koreksi", f"Hapus catatan {item['Ticker']}", refund_idr)
                     st.rerun()
 
         with col_pie:
             st.subheader("Alokasi Portofolio")
             df_pie = pd.DataFrame([
                 {"Ticker": item["Ticker"], "Nilai": item["Nilai Sekarang"]}
-                for item in baris_tampil_filter if item["Nilai Sekarang"] != "N/A"
+                for item in baris_tampil_filter if item["Nilai Sekarang"] is not None
             ])
 
             PALET_DASAR = [
@@ -1148,6 +1101,7 @@ with col_main:
 
         if st.button("Refresh Harga Sekarang"):
             ambil_harga_terkini.clear()
+            ambil_kurs_usd_idr.clear()
             st.rerun()
 
     st.markdown("---")
@@ -1159,15 +1113,96 @@ with col_main:
 
 
 # ============================================================
-# 6. Asisten AI — panel fixed di sisi kanan (menyatu seperti sidebar bawaan,
-#    tapi di kanan), polos tanpa efek dekoratif, sama seperti di halaman
-#    Pembanding Saham.
+# 6. Asisten AI — panel fixed di sisi kanan.
 # ============================================================
+SYSTEM_PROMPT_PORTOFOLIO = """Kamu adalah asisten manajemen portofolio di dalam sebuah aplikasi portfolio tracker. Tugasmu membantu pengguna memahami komposisi dan performa portofolio saham & crypto mereka.
+
+Data portofolio pengguna saat ini:
+{konteks}
+{blok_preferensi}
+{blok_dokumen}
+Instruksi:
+- Jawab berdasarkan data di atas, jangan mengarang angka yang tidak ada.
+- Perhatikan konsentrasi/diversifikasi portofolio — kalau porsi satu saham/crypto terlalu dominan, sebutkan risikonya.
+- Boleh membahas performa tiap posisi (untung/rugi), tapi jangan pernah memberi instruksi mutlak seperti "jual semua" atau "beli lagi" tanpa menjelaskan trade-off dan risikonya.
+- Ini BUKAN nasihat keuangan resmi — selalu ingatkan bahwa keputusan akhir ada di tangan pengguna.
+- Kalau ada catatan preferensi pengguna di atas, sesuaikan gaya jawabanmu dengan itu.
+- Jawab dalam Bahasa Indonesia, ringkas, boleh pakai bullet point.
+"""
+
+
+def bangun_konteks_portofolio(baris_tampil, total_modal, total_nilai_sekarang, saldo_tersedia=0.0, total_equity=0.0):
+    if not baris_tampil:
+        return (
+            f"Portofolio belum ada posisi saham/crypto. Trading Balance (kas belum diinvestasikan): "
+            f"Rp {saldo_tersedia:,.0f}."
+        )
+    baris_teks = []
+    for item in baris_tampil:
+        persen_txt = f"{item['Persentase']:.2f}%" if item["Persentase"] is not None else "N/A"
+        baris_teks.append(
+            f"- {item['Ticker']} ({item['Nama']}, {item['Kelas Aset']}): "
+            f"{fmt_jumlah(item['Jumlah'], item['Kelas Aset'])} {'unit' if item['Kelas Aset'] == 'Crypto' else 'lembar'}, "
+            f"harga beli {item['Mata Uang']} {fmt_harga_asli(item['Harga Beli'], item['Mata Uang'])}, "
+            f"harga sekarang {item['Mata Uang']} {fmt_harga_asli(item['Harga Sekarang'], item['Mata Uang'])}, "
+            f"nilai sekarang Rp {fmt_rupiah(item['Nilai Sekarang'])}, "
+            f"untung/rugi Rp {fmt_rupiah(item['Untung/Rugi'])} ({persen_txt})"
+        )
+    ringkasan = (
+        f"Trading Balance (kas belum diinvestasikan): Rp {saldo_tersedia:,.0f}. "
+        f"Invested (modal di posisi terbuka, sudah dikonversi ke Rupiah): Rp {total_modal:,.0f}. "
+        f"Nilai posisi saat ini: Rp {total_nilai_sekarang:,.0f}. "
+        f"Total Equity (kas + nilai posisi): Rp {total_equity:,.0f}."
+    )
+    return ringkasan + "\n" + "\n".join(baris_teks)
+
+
+if "riwayat_chat_portofolio" not in st.session_state:
+    memori_awal_pf = muat_memori_ai_pf()
+    st.session_state.riwayat_chat_portofolio = memori_awal_pf["riwayat"]
+    st.session_state.catatan_preferensi_ai_pf = memori_awal_pf["catatan_preferensi"]
+
+if "catatan_preferensi_ai_pf" not in st.session_state:
+    st.session_state.catatan_preferensi_ai_pf = ""
+
+SARAN_PROMPT_AI_PF = [
+    ("📊", "Apakah portofolio saya terlalu terkonsentrasi?"),
+    ("📈", "Bagaimana performa portofolio saya sejauh ini?"),
+    ("⚠️", "Saham/crypto mana yang risikonya paling besar?"),
+    ("🧭", "Bagaimana cara diversifikasi yang lebih baik?"),
+]
+
+
+def _escape_dolar(teks: str) -> str:
+    return teks.replace("$", "\\$")
+
+
+def _proses_prompt_ai_pf(kotak_chat, prompt_teks: str, konteks_pf: str):
+    st.session_state.riwayat_chat_portofolio.append({"role": "user", "content": prompt_teks})
+    with kotak_chat:
+        with st.chat_message("user"):
+            st.markdown(prompt_teks)
+        with st.chat_message("assistant"):
+            with st.spinner("Menganalisis..."):
+                catatan = st.session_state.get("catatan_preferensi_ai_pf", "").strip()
+                blok_preferensi = f"\nCatatan preferensi pengguna (ikuti gaya ini):\n{catatan}\n" if catatan else ""
+
+                dok = st.session_state.get("dokumen_diupload_ai_pf", "").strip()
+                blok_dokumen = f"\nData/dokumen tambahan yang diupload pengguna:\n{dok[:6000]}\n" if dok else ""
+
+                jawaban = tanya_ai(
+                    SYSTEM_PROMPT_PORTOFOLIO.format(
+                        konteks=konteks_pf, blok_preferensi=blok_preferensi, blok_dokumen=blok_dokumen,
+                    ),
+                    st.session_state.riwayat_chat_portofolio,
+                )
+            st.markdown(_escape_dolar(jawaban))
+    st.session_state.riwayat_chat_portofolio.append({"role": "assistant", "content": jawaban})
+    simpan_memori_ai_pf(st.session_state.riwayat_chat_portofolio, st.session_state.get("catatan_preferensi_ai_pf", ""))
+
+
 with st.container(key="panel_asisten_ai"):
 
-        # Container ini SELALU di-render (tidak dibungkus if) supaya node-nya
-        # tetap ada di DOM — buka/tutup panel cuma menggeser transform & opacity,
-        # bukan memasang/melepas elemen, sehingga transisinya mulus (bukan lompat).
         _transform_panel = "translateX(0)" if tampilkan_panel_ai else "translateX(100%)"
         _opacity_panel = 1 if tampilkan_panel_ai else 0
         _pointer_panel = "auto" if tampilkan_panel_ai else "none"
@@ -1241,8 +1276,6 @@ with st.container(key="panel_asisten_ai"):
                 border-radius: 10px;
                 padding: 10px 14px;
             }}
-            /* Chat input dibiarkan mengalir normal (bukan sticky/fixed) —
-               nempel di posisi paling bawah dari urutan konten panel. */
             .st-key-panel_asisten_ai [data-testid="stChatInput"] {{
                 width: 100%;
                 margin-top: 12px;
@@ -1253,8 +1286,6 @@ with st.container(key="panel_asisten_ai"):
             .st-key-panel_asisten_ai [data-testid="stChatInput"] textarea {{
                 color: #eef0fb !important;
             }}
-
-            /* Tombol close "X" — bulat kecil, nempel di pojok kanan atas panel. */
             .st-key-panel_asisten_ai .st-key-btn_tutup_panel_ai_pf button {{
                 background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.14);
@@ -1275,20 +1306,11 @@ with st.container(key="panel_asisten_ai"):
                 border-color: #ef5350;
                 color: #ffffff;
             }}
-
-            /* Di HP (layar sempit), panel jadi overlay penuh layar biar
-               tetap enak dipakai — bukan kolom sempit 380px yang kegencet. */
             @media (max-width: 768px) {{
                 .st-key-panel_asisten_ai {{
                     width: 100vw !important;
                     border-left: none;
                 }}
-
-                /* Override aturan global "horizontal scroll di layar sempit"
-                   (dipasang buat tabel/kartu lebar di halaman utama) — di
-                   dalam panel AI ini bikin tombol chip saran kepotong di
-                   pinggir layar. Di sini kolomnya dipaksa WRAP ke bawah
-                   (bukan discroll ke samping), biar semua tombol kebaca utuh. */
                 .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] {{
                     flex-wrap: wrap !important;
                     overflow-x: visible !important;
