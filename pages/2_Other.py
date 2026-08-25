@@ -1453,6 +1453,22 @@ with st.container(key="panel_asisten_ai"):
                     width: 100vw !important;
                     border-left: none;
                 }}
+
+                /* Override aturan global "horizontal scroll di layar sempit"
+                   (dipasang buat tabel/kartu lebar di halaman utama) — di
+                   dalam panel AI ini bikin tombol chip saran kepotong di
+                   pinggir layar. Di sini kolomnya dipaksa WRAP ke bawah
+                   (bukan discroll ke samping), biar semua tombol kebaca utuh. */
+                .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] {{
+                    flex-wrap: wrap !important;
+                    overflow-x: visible !important;
+                }}
+                .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+                .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
+                    flex: 1 1 100% !important;
+                    width: 100% !important;
+                    min-width: 0 !important;
+                }}
             }}
             .gemini-judul {{
                 font-size: 16px;

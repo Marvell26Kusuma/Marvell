@@ -7,6 +7,7 @@ import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 try:
     from curl_cffi import requests as curl_requests
@@ -532,6 +533,227 @@ def ambil_harga_terkini(ticker: str):
 
 
 # ============================================================
+# 4b. Grafik Performa — rekonstruksi kurva ekuitas harian dari histori
+#    harga tiap saham (yfinance) + tanggal beli tiap posisi + mutasi
+#    ledger, dan kurva IHSG buat pembanding.
+# ============================================================
+IHSG_TICKER = "^JKSE"
+
+RENTANG_WAKTU_HARI = {"1W": 7, "1M": 30, "3M": 90, "1Y": 365}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def ambil_histori_harga(ticker: str):
+    """Histori harga penutupan harian ~5 tahun terakhir (cukup buat cover
+    rentang 'All' di kebanyakan kasus pemakaian pribadi)."""
+    try:
+        data = yf.Ticker(ticker, session=dapatkan_sesi_yf()).history(period="5y")
+        if data is None or data.empty:
+            return None
+        harga = data["Close"]
+        if harga.index.tz is not None:
+            harga.index = harga.index.tz_localize(None)
+        return harga
+    except Exception:
+        return None
+
+
+def bangun_kurva_ekuitas(portofolio_df: pd.DataFrame, ledger_df: pd.DataFrame) -> pd.Series:
+    """Rekonstruksi Total Equity (kas + nilai posisi) per hari, dari
+    tanggal transaksi/posisi paling awal sampai hari ini."""
+    tanggal_mulai_kandidat = []
+    if not portofolio_df.empty:
+        tanggal_mulai_kandidat.append(pd.to_datetime(portofolio_df["TanggalBeli"]).min())
+    if not ledger_df.empty:
+        tanggal_mulai_kandidat.append(pd.to_datetime(ledger_df["Tanggal"]).min())
+
+    if not tanggal_mulai_kandidat:
+        return pd.Series(dtype=float)
+
+    tanggal_mulai = min(tanggal_mulai_kandidat)
+    tanggal_akhir = pd.Timestamp(date.today())
+    indeks_tanggal = pd.date_range(tanggal_mulai, tanggal_akhir, freq="D")
+
+    nilai_posisi = pd.Series(0.0, index=indeks_tanggal)
+    if not portofolio_df.empty:
+        for ticker, grup in portofolio_df.groupby("Ticker"):
+            harga = ambil_histori_harga(ticker)
+            if harga is None:
+                continue
+            harga_harian = harga.reindex(indeks_tanggal).ffill().bfill()
+
+            lembar_kumulatif = pd.Series(0.0, index=indeks_tanggal)
+            for _, baris in grup.iterrows():
+                tgl_beli = pd.to_datetime(baris["TanggalBeli"])
+                lembar_kumulatif.loc[lembar_kumulatif.index >= tgl_beli] += float(baris["Jumlah"])
+
+            nilai_posisi = nilai_posisi.add(lembar_kumulatif * harga_harian, fill_value=0.0)
+
+    kas = pd.Series(0.0, index=indeks_tanggal)
+    if not ledger_df.empty:
+        for _, baris in ledger_df.iterrows():
+            tgl = pd.to_datetime(baris["Tanggal"])
+            kas.loc[kas.index >= tgl] += float(baris["Jumlah"])
+
+    return (nilai_posisi + kas).round(0)
+
+
+def potong_rentang_waktu(seri: pd.Series, label: str) -> pd.Series:
+    if seri.empty:
+        return seri
+    akhir = seri.index.max()
+    if label == "All":
+        return seri
+    if label == "YTD":
+        mulai = pd.Timestamp(year=akhir.year, month=1, day=1)
+    else:
+        mulai = akhir - pd.Timedelta(days=RENTANG_WAKTU_HARI[label])
+    return seri[seri.index >= mulai]
+
+
+def hitung_kurva_return_persen(seri: pd.Series) -> pd.Series:
+    if seri.empty:
+        return seri
+    dasar = seri.iloc[0]
+    if not dasar:
+        return seri * 0.0
+    return (seri / dasar - 1) * 100
+
+
+def render_grafik_performa(seri_ekuitas: pd.Series):
+    st.subheader("Performance")
+
+    if seri_ekuitas.empty:
+        st.caption(
+            "Grafik performa portofolio dari hari ke hari akan muncul di sini setelah kamu "
+            "menyetor modal dan/atau menambahkan saham."
+        )
+        st.markdown("---")
+        return
+
+    rentang = st.radio(
+        "Rentang waktu grafik performa", ["1W", "1M", "3M", "YTD", "1Y", "All"],
+        index=3, horizontal=True, key="rentang_grafik_ekuitas", label_visibility="collapsed",
+    )
+    seri_tampil = potong_rentang_waktu(seri_ekuitas, rentang)
+
+    if seri_tampil.empty:
+        st.caption("Belum ada data untuk rentang waktu ini.")
+        st.markdown("---")
+        return
+
+    nilai_awal = seri_tampil.iloc[0]
+    nilai_akhir = seri_tampil.iloc[-1]
+    perubahan = nilai_akhir - nilai_awal
+    persen = (perubahan / nilai_awal * 100) if nilai_awal else 0.0
+    naik = perubahan >= 0
+    warna = "#26a69a" if naik else "#ef5350"
+    tanda = "+" if naik else ""
+
+    st.markdown(
+        f"""
+        <div style="margin-bottom:4px;">
+            <div style="font-size:13px; color:#8a8f99;">Total Equity</div>
+            <div style="font-size:32px; font-weight:800; letter-spacing:-0.02em;">
+                Rp {nilai_akhir:,.0f}
+            </div>
+            <div style="font-size:14px; font-weight:600; color:{warna};">
+                {tanda}{perubahan:,.0f} ({tanda}{persen:.2f}%) &nbsp;<span style="color:#8a8f99; font-weight:400;">periode {rentang}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=seri_tampil.index, y=seri_tampil.values, mode="lines",
+        line=dict(color=warna, width=2),
+        fill="tozeroy", fillcolor=f"{warna}26",
+        hovertemplate="%{x|%d %b %Y}<br>Rp %{y:,.0f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=260, margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(showgrid=False, color="#8a8f99"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(151,166,195,0.15)", color="#8a8f99"),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("---")
+
+
+def render_grafik_perbandingan_ihsg(seri_ekuitas: pd.Series):
+    st.subheader("Perbandingan dengan IHSG")
+    st.caption(
+        "Membandingkan persentase pertumbuhan Total Equity portofolio kamu dengan IDX Composite "
+        "(IHSG) pada rentang waktu yang sama. Data IHSG dari Yahoo Finance."
+    )
+
+    if seri_ekuitas.empty:
+        st.caption("Grafik perbandingan akan muncul di sini setelah kamu punya data portofolio.")
+        return
+
+    ihsg = ambil_histori_harga(IHSG_TICKER)
+    if ihsg is None:
+        st.warning("Gagal mengambil data IHSG dari Yahoo Finance. Coba lagi nanti.")
+        return
+
+    rentang = st.radio(
+        "Rentang waktu grafik perbandingan IHSG", ["1W", "1M", "3M", "YTD", "1Y", "All"],
+        index=3, horizontal=True, key="rentang_grafik_ihsg", label_visibility="collapsed",
+    )
+
+    seri_ekuitas_potong = potong_rentang_waktu(seri_ekuitas, rentang)
+    if seri_ekuitas_potong.empty:
+        st.caption("Belum ada data untuk rentang waktu ini.")
+        return
+
+    ihsg_potong = ihsg.reindex(seri_ekuitas_potong.index).ffill().bfill()
+
+    return_porto = hitung_kurva_return_persen(seri_ekuitas_potong)
+    return_ihsg = hitung_kurva_return_persen(ihsg_potong)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(
+            f'<div style="border-left:3px solid #26a69a; padding-left:10px;">'
+            f'<div style="color:#8a8f99; font-size:13px;">Portfolio</div>'
+            f'<div style="font-size:20px; font-weight:700;">{return_porto.iloc[-1]:+.2f}%</div></div>',
+            unsafe_allow_html=True,
+        )
+    with col2:
+        st.markdown(
+            f'<div style="border-left:3px solid #a78bfa; padding-left:10px;">'
+            f'<div style="color:#8a8f99; font-size:13px;">IHSG</div>'
+            f'<div style="font-size:20px; font-weight:700;">{return_ihsg.iloc[-1]:+.2f}%</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=return_porto.index, y=return_porto.values, mode="lines", name="Portfolio",
+        line=dict(color="#26a69a", width=2),
+        hovertemplate="%{x|%d %b %Y}<br>Portfolio: %{y:+.2f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=return_ihsg.index, y=return_ihsg.values, mode="lines", name="IHSG",
+        line=dict(color="#a78bfa", width=2),
+        hovertemplate="%{x|%d %b %Y}<br>IHSG: %{y:+.2f}%<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(151,166,195,0.35)")
+    fig.update_layout(
+        height=300, margin=dict(l=10, r=10, t=10, b=10),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+        xaxis=dict(showgrid=False, color="#8a8f99"),
+        yaxis=dict(showgrid=True, gridcolor="rgba(151,166,195,0.15)", color="#8a8f99", ticksuffix="%"),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================
 # 5. Layout dua bagian: konten utama (kiri) + panel Asisten AI (kanan, fixed sidebar)
 # ============================================================
 tampilkan_panel_ai = st.session_state.get("tampilkan_panel_ai", False)
@@ -596,6 +818,16 @@ components.html(
 col_main = st.container()
 
 with col_main:
+
+    # ============================================================
+    # 5a-1. Grafik Performa (Total Equity dari hari ke hari) — paling atas
+    #      halaman, direkonstruksi dari histori harga tiap saham + tanggal
+    #      beli + mutasi ledger. Ditaruh sebelum apa pun supaya langsung
+    #      kelihatan begitu halaman dibuka.
+    # ============================================================
+    with st.spinner("Menghitung performa portofolio..."):
+        seri_ekuitas = bangun_kurva_ekuitas(st.session_state.portofolio, st.session_state.ledger_modal)
+    render_grafik_performa(seri_ekuitas)
 
     # ============================================================
     # 5a0. Kelola Modal — Setor / Tarik Dana. Ini yang mengisi "Trading
@@ -796,6 +1028,13 @@ with col_main:
             ambil_harga_terkini.clear()
             st.rerun()
 
+    st.markdown("---")
+
+    # ============================================================
+    # 5d. Grafik Perbandingan dengan IHSG — paling bawah halaman.
+    # ============================================================
+    render_grafik_perbandingan_ihsg(seri_ekuitas)
+
 
 # ============================================================
 # 6. Asisten AI — panel fixed di sisi kanan (menyatu seperti sidebar bawaan,
@@ -921,6 +1160,22 @@ with st.container(key="panel_asisten_ai"):
                 .st-key-panel_asisten_ai {{
                     width: 100vw !important;
                     border-left: none;
+                }}
+
+                /* Override aturan global "horizontal scroll di layar sempit"
+                   (dipasang buat tabel/kartu lebar di halaman utama) — di
+                   dalam panel AI ini bikin tombol chip saran kepotong di
+                   pinggir layar. Di sini kolomnya dipaksa WRAP ke bawah
+                   (bukan discroll ke samping), biar semua tombol kebaca utuh. */
+                .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] {{
+                    flex-wrap: wrap !important;
+                    overflow-x: visible !important;
+                }}
+                .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+                .st-key-panel_asisten_ai [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
+                    flex: 1 1 100% !important;
+                    width: 100% !important;
+                    min-width: 0 !important;
                 }}
             }}
             </style>
